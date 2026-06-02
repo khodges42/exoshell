@@ -2,6 +2,8 @@
 
 A cognitive shell for engineers who still want the controls.
 
+![DEC inspired logo](docs/images/logo.png)
+
 Exoshell is a local-first cognitive shell designed for practitioners who want AI augmentation without surrendering operational awareness, understanding, or control.
 
 Exoshell is not designed for “vibe coding.”

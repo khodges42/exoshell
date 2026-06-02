@@ -4,351 +4,96 @@ A cognitive shell for engineers who still want the controls.
 
 ![DEC inspired logo](docs/images/logo.png)
 
-Exoshell is a local-first cognitive shell designed for practitioners who want AI augmentation without surrendering operational awareness, understanding, or control.
+Exoshell is a local-first, shell-adjacent assistant for practitioners who want AI help without giving up operational awareness or control. The shell remains primary; Exoshell suggests, explains, preserves context, and keeps the human in the loop. Exoshell is not designed for “vibe coding.”
 
-Exoshell is not designed for “vibe coding.”
+For the full project philosophy and design direction, read [docs/DESIGN.md](docs/DESIGN.md).
 
-It is built for:
+## Philosophy
 
-* engineers who read logs
-* people who tune their shell
-* operators who want to stay sharp
-* terminal users who care about flow-state
-* practitioners who believe understanding systems still matters
+Exoshell exists because AI tooling should make skilled operators sharper, not less aware. It should preserve flow, reduce cognitive overhead, and help users understand the systems they are working on.
 
-Exoshell does not try to replace the operator.
+The shell remains primary. Exoshell lives beside it as an operational overlay: it suggests commands, explains tradeoffs, surfaces uncertainty, records useful context, and leaves execution under human control.
 
-It acts more like:
+The project prefers visible systems over hidden automation, review over blind action, and deterministic tools over unnecessary AI. If `awk`, `jq`, `rg`, `git`, or a platform-native command is the right tool, Exoshell should say so.
 
-* a cockpit HUD
-* a systems copilot
-* a cognitive exoskeleton
-* an operational overlay for the terminal
+Exoshell is local-first, terminal-native, inspectable, hackable, and practitioner-oriented. It is not an autonomous coding employee, a replacement shell, a manager dashboard, or a hidden context accumulation system.
 
-The shell remains primary.
+Sacred rule: enhance skill; do not replace it.
 
-The human remains in control.
+## Project State
 
-⸻
+Phase 1 is closed.
 
-Philosophy
+The current implementation supports the first shell-adjacent model chat milestone: a Rust CLI, OpenAI-compatible provider abstraction, PowerShell/POSIX shell-family selection, command-suggestion formatting, markdown transcripts, and a basic interactive REPL.
 
-Modern AI tooling is rapidly drifting toward opaque automation:
+The roadmap is tracked in [docs/PHASES.md](docs/PHASES.md). Phase 2 moves toward explicit context, modes, hotkeys, and stronger operator controls.
 
-* giant autonomous rewrites
-* hidden context accumulation
-* blind patch acceptance
-* “just trust the agent”
-* software generation without understanding
+## Running Locally
 
-Exoshell takes the opposite position.
+Phase 1 run instructions live in [docs/phase1_run.md](docs/phase1_run.md).
 
-We believe:
+Quick start:
 
-* skill matters
-* operational literacy matters
-* flow-state matters
-* composability matters
-* local-first tooling matters
-* understanding systems matters
+```sh
+cargo run
+```
 
-Exoshell exists to:
+Use a config file:
 
-* preserve awareness
-* reduce cognitive overhead
-* accelerate understanding
-* enhance practitioner capability
-* keep the operator in the loop
+```sh
+cargo run -- --config path/to/config.toml
+```
 
-Manual Supra, not Waymo.
+Select a shell dialect:
 
-⸻
+```sh
+cargo run -- --shell powershell
+cargo run -- --shell posix
+```
 
-Core Principles
+Exoshell suggests commands. It does not execute them.
 
-Enhance Skill. Do Not Replace It.
+## Quality Checks
 
-Exoshell is intentionally designed for practitioners who want to deepen technical understanding rather than delegate it away.
+```sh
+cargo fmt --check
+cargo test
+cargo clippy --all-targets --all-features
+```
 
-The system should:
+On Windows PowerShell, the Phase 1 smoke test is:
 
-* teach
-* explain
-* preserve context
-* surface uncertainty honestly
-* encourage good tooling choices
-* help users become more capable over time
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\manual_phase1_startup.ps1
+```
 
-The system should not:
+## Documentation
 
-* obscure systems
-* normalize blind automation
-* encourage dependency
-* hide execution
-* replace understanding with throughput
+- [Design](docs/DESIGN.md): project philosophy, interaction model, non-goals, and technical direction.
+- [Phases](docs/PHASES.md): staged roadmap from Phase 1 through the mature cognitive shell overlay.
+- [Phase 1 Run Guide](docs/phase1_run.md): local setup, config examples, CLI flags, and current limitations.
+- [Versioning](docs/versioning.md): semantic versioning and release naming rules.
+- [Open Questions](docs/questions.md): decisions that still need explicit agreement.
 
-⸻
+## Contributing
 
-The Human Keeps The Controls
+Contributions are welcome, including from people who are learning Rust, terminal tooling, AI integration, or open source contribution workflows.
 
-Exoshell prefers:
+Before making a larger change, please read [docs/DESIGN.md](docs/DESIGN.md) so you understand the philosophy of the project. Exoshell is intentionally not an autonomous coding employee or a replacement shell. The core idea is to enhance skill, preserve understanding, and keep the operator in control.
 
-* suggestions over autonomous action
-* diffs over blind edits
-* transparency over hidden state
-* composability over abstraction
-* instrumentation over “AI magic”
+Good contributions can be small:
 
-You should never feel:
+- clarifying docs
+- improving error messages
+- adding focused tests
+- tightening shell-specific behavior
+- fixing platform issues
+- turning roadmap items into small implementation tasks
 
-“oh god, it’s doing something.”
+If you are unsure where to start, open an issue or ask a question. It is fine to say what you are trying to learn; the project should be friendly to careful beginners as well as experienced systems people.
 
-You should feel:
+When changing release-visible behavior, also check [docs/versioning.md](docs/versioning.md).
 
-* informed
-* aware
-* amplified
-* locked in
+## License
 
-⸻
-
-Prefer Existing UNIX Tools
-
-If awk is the correct solution, Exoshell should say so.
-
-If jq is cleaner, Exoshell should prefer it.
-
-If the shell already has a deterministic answer, Exoshell should not force AI into the workflow.
-
-The goal is not:
-
-“use AI everywhere.”
-
-The goal is:
-
-“use the right tool while preserving flow.”
-
-⸻
-
-Calm Software
-
-Exoshell should feel like:
-
-* a tuned workstation
-* a mech cockpit
-* a trusted operator console at 2am
-
-Not:
-
-* a productivity dashboard
-* a startup control panel
-* a gamified assistant
-* an attention machine
-
-The UI should be:
-
-* restrained
-* information dense
-* aesthetically intentional
-* terminal-native
-* operationally calm
-
-⸻
-
-What Exoshell Is
-
-Exoshell is:
-
-* shell-adjacent
-* terminal-native
-* local-first
-* practitioner-oriented
-* composable
-* inspectable
-* hackable
-* flow-state focused
-
-Exoshell is inspired by:
-
-* GNU / UNIX philosophy
-* Emacs
-* Vim / Neovim
-* Arch Linux
-* Gentoo
-* tmux
-* fish shell
-* htop
-* lazygit
-* cockpit instrumentation
-* workstation software
-
-⸻
-
-What Exoshell Is NOT
-
-Exoshell is not:
-
-* an autonomous coding employee
-* a hidden surveillance layer
-* a cloud lock-in platform
-* a manager analytics dashboard
-* “AI for everyone”
-* a replacement for the shell
-* a beginner-first abstraction layer
-* a passive screen-watching assistant
-
-Exoshell deliberately makes certain workflows harder:
-
-* blind rewrites
-* opaque automation
-* no-review patching
-* hidden execution
-* dependency-forming abstractions
-* automation without understanding
-
-⸻
-
-Interaction Model
-
-The core Exoshell loop is:
-
-human explores system
-↓
-Exoshell observes context
-↓
-Exoshell enhances awareness
-↓
-human requests action or insight
-↓
-Exoshell suggests command or interpretation
-↓
-human reviews/accepts/modifies
-↓
-Exoshell interprets results
-↓
-flow continues
-
-Exoshell is designed to feel:
-
-* collaborative
-* instrument-like
-* operational
-* responsive
-* trustworthy
-
-Not:
-
-* supervisory
-* autonomous
-* opaque
-* overbearing
-
-⸻
-
-Features (Planned)
-
-Shell-Adjacent Cognitive Overlay
-
-Exoshell lives beside your shell instead of replacing it.
-
-Command Suggestions
-
-Paste, inspect, or execute suggested commands with hotkeys.
-
-Signal Strength
-
-Surface uncertainty honestly instead of hallucinating confidence.
-
-Follow Mode
-
-Ambient repo awareness and contextual operational guidance.
-
-Operational Memory
-
-Searchable markdown-based session notebooks and runbook generation.
-
-Repo Awareness
-
-tree-sitter powered structural understanding.
-
-Stances
-
-Operational behavior modes:
-
-* operator
-* audit
-* teach
-* drift
-* quiet
-* cockpit
-
-Personalities
-
-Optional expressive overlays:
-
-* minimalist
-* mech pilot
-* magical girl
-* sleepy night operator
-* UNIX gremlin
-
-Personality never overrides operational clarity.
-
-⸻
-
-Local-First
-
-Exoshell is designed local-first.
-
-We intentionally optimize for:
-
-* weaker local models
-* constrained contexts
-* explicit orchestration
-* inspectable behavior
-
-If Exoshell works well with local models, stronger hosted models become even more effective.
-
-Cloud backends are optional.
-
-User sovereignty is not optional.
-
-⸻
-
-Technical Direction
-
-Initial stack:
-
-* Rust
-* Ratatui
-* Crossterm
-* Tokio
-* tree-sitter
-* PTY integration
-* markdown notebooks
-* local model adapters
-
-⸻
-
-Cultural Direction
-
-Exoshell is practitioner software.
-
-It rewards:
-
-* curiosity
-* literacy
-* tuning
-* craftsmanship
-* operational awareness
-* intentional workflows
-
-The goal is not to eliminate expertise.
-
-The goal is to amplify it.
-
-⸻
-
-Sacred Rule
-
-Enhance skill. Do not replace it.
+Exoshell is licensed under the GNU General Public License v3.0 or later. See [LICENSE](LICENSE).

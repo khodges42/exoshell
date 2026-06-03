@@ -44,6 +44,21 @@ enabled = true
 directory = "transcripts"
 ```
 
+Local OpenAI-compatible servers such as Ollama do not require an API key env var. Example Ollama config:
+
+```toml
+[provider]
+base_url = "http://localhost:11434/v1"
+model = "qwen3-coder-next"
+
+[shell]
+family = "powershell"
+
+[transcript]
+enabled = true
+directory = "transcripts"
+```
+
 Supported shell families in this first pass are `powershell` and `posix`.
 
 PowerShell example:
@@ -72,7 +87,7 @@ Phase 1 behavior:
 - Suggested command blocks are labeled for review in terminal output.
 - Risky commands should be reviewed manually before use.
 - Session transcripts are markdown files when transcripts are enabled.
-- API keys are read from environment variables and are not written to transcripts.
+- Hosted provider API keys are read from environment variables and are not written to transcripts.
 
 Current limitations:
 

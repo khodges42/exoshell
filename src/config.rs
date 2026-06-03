@@ -73,14 +73,13 @@ impl Config {
         let shell = raw.shell.unwrap_or_default();
         let transcript = raw.transcript.unwrap_or_default();
 
+        let base_url = provider
+            .base_url
+            .unwrap_or_else(|| "https://api.openai.com/v1".into());
         let api_key_env = provider
             .api_key_env
             .unwrap_or_else(|| "OPENAI_API_KEY".into());
-        let api_key = env::var(&api_key_env).map_err(|_| {
-            ConfigError::MissingApiKey(format!(
-                "set {api_key_env} or configure provider.api_key_env"
-            ))
-        })?;
+        let api_key = provider_api_key(&base_url, &api_key_env)?;
 
         let family = shell.family.unwrap_or_else(default_shell_family);
         let family = family
@@ -89,9 +88,7 @@ impl Config {
 
         Ok(Self {
             provider: ProviderConfig {
-                base_url: provider
-                    .base_url
-                    .unwrap_or_else(|| "https://api.openai.com/v1".into()),
+                base_url,
                 api_key,
                 api_key_env,
                 model: provider.model.unwrap_or_else(|| "gpt-4.1-mini".into()),
@@ -143,6 +140,45 @@ impl RawConfig {
 
 fn default_shell_family() -> String {
     ShellFamily::default_for_platform().to_string()
+}
+
+fn provider_api_key(base_url: &str, api_key_env: &str) -> Result<String, ConfigError> {
+    match env::var(api_key_env) {
+        Ok(value) => Ok(value),
+        Err(_) if is_local_provider_url(base_url) => Ok("exoshell-local-provider".into()),
+        Err(_) => Err(ConfigError::MissingApiKey(format!(
+            "set {api_key_env} or configure provider.api_key_env"
+        ))),
+    }
+}
+
+fn is_local_provider_url(base_url: &str) -> bool {
+    let Some(host) = provider_host(base_url) else {
+        return false;
+    };
+
+    matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "0.0.0.0")
+}
+
+fn provider_host(base_url: &str) -> Option<String> {
+    let after_scheme = base_url
+        .strip_prefix("http://")
+        .or_else(|| base_url.strip_prefix("https://"))
+        .unwrap_or(base_url);
+    let authority = after_scheme.split('/').next()?.trim();
+
+    if authority.starts_with('[') {
+        return authority
+            .split(']')
+            .next()
+            .map(|host| host.trim_start_matches('[').to_ascii_lowercase());
+    }
+
+    authority
+        .split(':')
+        .next()
+        .filter(|host| !host.is_empty())
+        .map(|host| host.to_ascii_lowercase())
 }
 
 fn default_config_path() -> PathBuf {
@@ -244,17 +280,12 @@ mod tests {
 
     #[test]
     fn loads_toml_config_file() {
-        unsafe {
-            env::set_var("EXOSHELL_TEST_KEY", "secret");
-        }
-
         let mut file = tempfile::NamedTempFile::new().expect("temp config");
         write!(
             file,
             r#"
 [provider]
 base_url = "http://localhost:11434/v1"
-api_key_env = "EXOSHELL_TEST_KEY"
 model = "local-model"
 
 [shell]
@@ -269,6 +300,7 @@ enabled = false
         let config = Config::load(Some(file.path())).expect("config loads");
 
         assert_eq!(config.provider.base_url, "http://localhost:11434/v1");
+        assert_eq!(config.provider.api_key, "exoshell-local-provider");
         assert_eq!(config.provider.model, "local-model");
         assert_eq!(config.shell.family, ShellFamily::Posix);
         assert!(!config.transcript.enabled);
@@ -302,5 +334,43 @@ enabled = false
         assert_eq!(config.shell.family, ShellFamily::Posix);
         assert!(!config.transcript.enabled);
         assert_eq!(config.transcript.directory, tempdir);
+    }
+
+    #[test]
+    fn local_provider_urls_do_not_require_api_key_env() {
+        let config = Config::from_raw(RawConfig {
+            provider: Some(RawProviderConfig {
+                base_url: Some("http://127.0.0.1:11434/v1".into()),
+                api_key_env: Some("EXOSHELL_MISSING_LOCAL_KEY".into()),
+                ..RawProviderConfig::default()
+            }),
+            ..RawConfig::default()
+        })
+        .expect("local config should load without key");
+
+        assert_eq!(config.provider.api_key, "exoshell-local-provider");
+    }
+
+    #[test]
+    fn hosted_provider_urls_require_api_key_env() {
+        let error = Config::from_raw(RawConfig {
+            provider: Some(RawProviderConfig {
+                base_url: Some("https://api.openai.com/v1".into()),
+                api_key_env: Some("EXOSHELL_MISSING_HOSTED_KEY".into()),
+                ..RawProviderConfig::default()
+            }),
+            ..RawConfig::default()
+        })
+        .expect_err("hosted config should require key");
+
+        assert!(matches!(error, ConfigError::MissingApiKey(_)));
+    }
+
+    #[test]
+    fn detects_local_provider_hosts() {
+        assert!(is_local_provider_url("http://localhost:11434/v1"));
+        assert!(is_local_provider_url("http://127.0.0.1:11434/v1"));
+        assert!(is_local_provider_url("http://[::1]:11434/v1"));
+        assert!(!is_local_provider_url("https://api.openai.com/v1"));
     }
 }

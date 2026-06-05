@@ -26,7 +26,7 @@ Phase 1 is closed.
 
 The current implementation supports the first shell-adjacent model chat milestone: a Rust CLI, OpenAI-compatible provider abstraction, PowerShell/POSIX shell-family selection, command-suggestion formatting, markdown transcripts, and a basic interactive REPL.
 
-The codebase also contains the initial Phase 1.5 context engine foundation: context entries, provenance metadata, priority and size estimates, a session context store, provider registry, default manual/file/command-output/directory-summary providers, deterministic pruning, and prompt-context rendering. REPL context commands are still planned.
+The codebase also contains the Phase 1.5 context engine foundation: context entries, provenance metadata, priority and size estimates, a session context store, provider registry, default manual/file/command-output/stdin/directory-summary providers, context REPL commands, deterministic pruning, budget checks, transcript events, startup context flags, piped stdin import, and prompt-context rendering.
 
 The active milestone is Phase 1.5, the explicit context engine foundation tracked in [docs/tasks/phase15_context_tasks.md](docs/tasks/phase15_context_tasks.md). Phase 2 builds on that context engine with stances, safer command handling, hotkeys, and stronger operator controls.
 
@@ -74,6 +74,7 @@ powershell -ExecutionPolicy Bypass -File scripts\manual_phase1_startup.ps1
 ## Documentation
 
 - [Design](docs/DESIGN.md): project philosophy, interaction model, non-goals, and technical direction.
+- [Context Engine](docs/context_engine.md): explicit context model, providers, commands, budgets, transcripts, serialization, and redaction limits.
 - [Phases](docs/PHASES.md): staged roadmap from Phase 1 through the mature cognitive shell overlay.
 - [Phase 1 Run Guide](docs/phase1_run.md): local setup, config examples, CLI flags, and current limitations.
 - [Versioning](docs/versioning.md): semantic versioning and release naming rules.

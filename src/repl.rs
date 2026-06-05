@@ -35,6 +35,27 @@ impl Repl {
                 break;
             }
 
+            if input == "/add-output" {
+                let output = read_multiline_with_prompt("paste command output")?;
+                match self.app.add_command_output(output, None, None) {
+                    Ok(message) => println!("{message}"),
+                    Err(error) => eprintln!("context command failed: {error}"),
+                }
+                continue;
+            }
+
+            if input.starts_with("/context")
+                || input.starts_with("/add-note ")
+                || input.starts_with("/add-file ")
+                || input.starts_with("/add-dir ")
+            {
+                match self.app.handle_command(&input) {
+                    Ok(message) => println!("{message}"),
+                    Err(error) => eprintln!("context command failed: {error}"),
+                }
+                continue;
+            }
+
             let input = if input == "/multi" {
                 read_multiline()?
             } else {
@@ -71,7 +92,11 @@ fn read_input() -> Result<Option<String>, ReplError> {
 }
 
 fn read_multiline() -> Result<String, ReplError> {
-    println!("multi-line input; finish with a single '.' line");
+    read_multiline_with_prompt("multi-line input")
+}
+
+fn read_multiline_with_prompt(prompt: &str) -> Result<String, ReplError> {
+    println!("{prompt}; finish with a single '.' line");
 
     let mut lines = Vec::new();
     loop {

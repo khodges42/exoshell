@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::app::CliOptions;
+use crate::context::ContextBudget;
 use crate::shell::ShellFamily;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +13,7 @@ pub struct Config {
     pub provider: ProviderConfig,
     pub shell: ShellConfig,
     pub transcript: TranscriptConfig,
+    pub context: ContextConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +22,7 @@ pub struct ProviderConfig {
     pub api_key: String,
     pub api_key_env: String,
     pub model: String,
+    pub request_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,11 +36,27 @@ pub struct TranscriptConfig {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ContextConfig {
+    pub max_characters: Option<usize>,
+    pub max_estimated_tokens: Option<usize>,
+}
+
+impl ContextConfig {
+    pub fn budget(&self) -> ContextBudget {
+        ContextBudget {
+            max_characters: self.max_characters,
+            max_estimated_tokens: self.max_estimated_tokens,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct RawConfig {
     provider: Option<RawProviderConfig>,
     shell: Option<RawShellConfig>,
     transcript: Option<RawTranscriptConfig>,
+    context: Option<RawContextConfig>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -45,6 +64,7 @@ struct RawProviderConfig {
     base_url: Option<String>,
     api_key_env: Option<String>,
     model: Option<String>,
+    request_timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -56,6 +76,12 @@ struct RawShellConfig {
 struct RawTranscriptConfig {
     directory: Option<PathBuf>,
     enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawContextConfig {
+    max_characters: Option<usize>,
+    max_estimated_tokens: Option<usize>,
 }
 
 impl Config {
@@ -72,6 +98,7 @@ impl Config {
         let provider = raw.provider.unwrap_or_default();
         let shell = raw.shell.unwrap_or_default();
         let transcript = raw.transcript.unwrap_or_default();
+        let context = raw.context.unwrap_or_default();
 
         let base_url = provider
             .base_url
@@ -92,11 +119,16 @@ impl Config {
                 api_key,
                 api_key_env,
                 model: provider.model.unwrap_or_else(|| "gpt-4.1-mini".into()),
+                request_timeout_seconds: provider.request_timeout_seconds.unwrap_or(120),
             },
             shell: ShellConfig { family },
             transcript: TranscriptConfig {
                 directory: transcript.directory.unwrap_or_else(default_transcript_dir),
                 enabled: transcript.enabled.unwrap_or(true),
+            },
+            context: ContextConfig {
+                max_characters: context.max_characters,
+                max_estimated_tokens: context.max_estimated_tokens,
             },
         })
     }
@@ -272,6 +304,7 @@ mod tests {
                 family: Some("cmd".into()),
             }),
             transcript: None,
+            context: None,
         })
         .expect_err("shell family should be rejected");
 
@@ -287,12 +320,17 @@ mod tests {
 [provider]
 base_url = "http://localhost:11434/v1"
 model = "local-model"
+request_timeout_seconds = 45
 
 [shell]
 family = "posix"
 
 [transcript]
 enabled = false
+
+[context]
+max_characters = 12000
+max_estimated_tokens = 3000
 "#
         )
         .expect("write config");
@@ -302,8 +340,32 @@ enabled = false
         assert_eq!(config.provider.base_url, "http://localhost:11434/v1");
         assert_eq!(config.provider.api_key, "exoshell-local-provider");
         assert_eq!(config.provider.model, "local-model");
+        assert_eq!(config.provider.request_timeout_seconds, 45);
         assert_eq!(config.shell.family, ShellFamily::Posix);
         assert!(!config.transcript.enabled);
+        assert_eq!(config.context.max_characters, Some(12000));
+        assert_eq!(config.context.max_estimated_tokens, Some(3000));
+        assert_eq!(config.context.budget().max_characters, Some(12000));
+    }
+
+    #[test]
+    fn context_budget_defaults_to_unlimited() {
+        unsafe {
+            env::set_var("EXOSHELL_TEST_KEY", "secret");
+        }
+
+        let config = Config::from_raw(RawConfig {
+            provider: Some(RawProviderConfig {
+                api_key_env: Some("EXOSHELL_TEST_KEY".into()),
+                ..RawProviderConfig::default()
+            }),
+            ..RawConfig::default()
+        })
+        .expect("config loads");
+
+        assert_eq!(config.context.max_characters, None);
+        assert_eq!(config.context.max_estimated_tokens, None);
+        assert_eq!(config.provider.request_timeout_seconds, 120);
     }
 
     #[test]

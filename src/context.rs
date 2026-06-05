@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContextEntry {
@@ -118,6 +119,22 @@ impl fmt::Display for ContextPriority {
     }
 }
 
+impl FromStr for ContextPriority {
+    type Err = ContextError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "low" => Ok(Self::Low),
+            "normal" => Ok(Self::Normal),
+            "high" => Ok(Self::High),
+            "critical" => Ok(Self::Critical),
+            other => Err(ContextError::InvalidInput(format!(
+                "unsupported context priority '{other}', expected low, normal, high, or critical"
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContextProvenance {
     pub origin: ContextOrigin,
@@ -125,6 +142,7 @@ pub struct ContextProvenance {
     pub command: Option<String>,
     pub cwd: Option<PathBuf>,
     pub provider_details: HashMap<String, String>,
+    pub sensitive_provider_fields: Vec<String>,
 }
 
 impl ContextProvenance {
@@ -135,6 +153,7 @@ impl ContextProvenance {
             command: None,
             cwd: None,
             provider_details: HashMap::new(),
+            sensitive_provider_fields: Vec::new(),
         }
     }
 
@@ -286,6 +305,7 @@ pub fn register_default_context_providers(
     registry.register(Box::new(ManualContextProvider))?;
     registry.register(Box::new(FileContextProvider::default()))?;
     registry.register(Box::new(CommandOutputContextProvider))?;
+    registry.register(Box::new(StdinContextProvider))?;
     registry.register(Box::new(DirectorySummaryContextProvider::default()))?;
     Ok(())
 }
@@ -428,6 +448,40 @@ impl ContextProvider for CommandOutputContextProvider {
             "",
             ContextKind::CommandOutput,
             request.title.unwrap_or_else(|| "command output".into()),
+            provenance,
+            content,
+        ))
+    }
+}
+
+pub struct StdinContextProvider;
+
+impl ContextProvider for StdinContextProvider {
+    fn metadata(&self) -> ContextProviderMetadata {
+        ContextProviderMetadata {
+            name: "stdin".into(),
+            kind: ContextKind::CommandOutput,
+            description: "adds piped stdin as explicit context".into(),
+        }
+    }
+
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+        let content = required_non_empty_content(request.content)?;
+        let mut provenance = ContextProvenance::new(ContextOrigin::Stdin);
+        provenance.cwd = request.cwd;
+        provenance
+            .provider_details
+            .insert("provided_by_user".into(), "true".into());
+        provenance.provider_details.insert(
+            "upstream_command_known".into(),
+            request.command.is_some().to_string(),
+        );
+        provenance.command = request.command;
+
+        Ok(ContextEntry::new(
+            "",
+            ContextKind::CommandOutput,
+            request.title.unwrap_or_else(|| "piped stdin".into()),
             provenance,
             content,
         ))
@@ -581,11 +635,36 @@ impl SessionContextStore {
         )
     }
 
+    pub fn stats(&self) -> ContextStats {
+        let total_entries = self.entries.len();
+        let enabled_entries = self.entries.iter().filter(|entry| entry.enabled).count();
+        let disabled_entries = total_entries.saturating_sub(enabled_entries);
+        let pinned_entries = self.entries.iter().filter(|entry| entry.pinned).count();
+        let size = self.total_size();
+
+        ContextStats {
+            total_entries,
+            enabled_entries,
+            disabled_entries,
+            pinned_entries,
+            enabled_size: size,
+        }
+    }
+
     fn next_context_id(&mut self) -> String {
         let id = format!("ctx-{:03}", self.next_id);
         self.next_id += 1;
         id
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextStats {
+    pub total_entries: usize,
+    pub enabled_entries: usize,
+    pub disabled_entries: usize,
+    pub pinned_entries: usize,
+    pub enabled_size: ContextSize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -677,6 +756,9 @@ pub fn render_prompt_context(entries: &[ContextEntry]) -> String {
         if let Some(cwd) = &entry.provenance.cwd {
             rendered.push_str(&format!("Cwd: {}\n", cwd.display()));
         }
+        if let Some(truncated) = entry.provenance.provider_details.get("truncated") {
+            rendered.push_str(&format!("Truncated: {truncated}\n"));
+        }
         rendered.push_str(&format!("Priority: {}\n", entry.priority));
         rendered.push('\n');
         rendered.push_str(&entry.content);
@@ -684,6 +766,172 @@ pub fn render_prompt_context(entries: &[ContextEntry]) -> String {
     }
 
     rendered.trim_end().to_string()
+}
+
+pub fn render_context_list(entries: &[ContextEntry]) -> String {
+    if entries.is_empty() {
+        return "No context entries.".into();
+    }
+
+    let mut rendered = String::from("ID       Type               State     Pin  Priority  Size\n");
+    for entry in entries {
+        rendered.push_str(&format!(
+            "{:<8} {:<18} {:<9} {:<4} {:<9} {} chars / ~{} tokens  {}\n",
+            entry.id,
+            entry.kind,
+            if entry.enabled { "enabled" } else { "disabled" },
+            if entry.pinned { "yes" } else { "no" },
+            entry.priority,
+            entry.size.characters,
+            entry.size.estimated_tokens,
+            entry.title
+        ));
+    }
+
+    rendered.trim_end().to_string()
+}
+
+pub fn render_context_details(entry: &ContextEntry) -> String {
+    let mut rendered = String::new();
+    rendered.push_str(&format!("ID: {}\n", entry.id));
+    rendered.push_str(&format!("Type: {}\n", entry.kind));
+    rendered.push_str(&format!("Title: {}\n", entry.title));
+    rendered.push_str(&format!("Enabled: {}\n", entry.enabled));
+    rendered.push_str(&format!("Pinned: {}\n", entry.pinned));
+    rendered.push_str(&format!("Priority: {}\n", entry.priority));
+    rendered.push_str(&format!(
+        "Size: {} chars / ~{} tokens\n",
+        entry.size.characters, entry.size.estimated_tokens
+    ));
+    rendered.push_str(&format!("Origin: {}\n", entry.provenance.origin));
+    if let Some(path) = &entry.provenance.source_path {
+        rendered.push_str(&format!("Path: {}\n", path.display()));
+    }
+    if let Some(command) = &entry.provenance.command {
+        rendered.push_str(&format!("Command: {command}\n"));
+    }
+    if let Some(cwd) = &entry.provenance.cwd {
+        rendered.push_str(&format!("Cwd: {}\n", cwd.display()));
+    }
+    for (key, value) in redacted_provider_details(&entry.provenance) {
+        rendered.push_str(&format!("{key}: {value}\n"));
+    }
+    rendered.push('\n');
+    rendered.push_str(&entry.content);
+    rendered
+}
+
+pub fn render_context_stats(stats: ContextStats, budget: ContextBudget) -> String {
+    let mut rendered = String::new();
+    rendered.push_str(&format!("total_entries: {}\n", stats.total_entries));
+    rendered.push_str(&format!("enabled_entries: {}\n", stats.enabled_entries));
+    rendered.push_str(&format!("disabled_entries: {}\n", stats.disabled_entries));
+    rendered.push_str(&format!("pinned_entries: {}\n", stats.pinned_entries));
+    rendered.push_str(&format!("characters: {}\n", stats.enabled_size.characters));
+    rendered.push_str(&format!(
+        "estimated_tokens: {}\n",
+        stats.enabled_size.estimated_tokens
+    ));
+    if let Some(max) = budget.max_characters {
+        rendered.push_str(&format!(
+            "character_budget: {}/{}\n",
+            stats.enabled_size.characters, max
+        ));
+    }
+    if let Some(max) = budget.max_estimated_tokens {
+        rendered.push_str(&format!(
+            "token_budget: {}/{}\n",
+            stats.enabled_size.estimated_tokens, max
+        ));
+    }
+
+    rendered.trim_end().to_string()
+}
+
+pub fn render_prune_result(result: &ContextPruneResult) -> String {
+    format!(
+        "included: {}\nremoved: {}\nfinal_size: {} chars / ~{} tokens\nover_budget: {}",
+        comma_list(&result.included_ids),
+        comma_list(&result.removed_ids),
+        result.final_size.characters,
+        result.final_size.estimated_tokens,
+        result.over_budget
+    )
+}
+
+pub fn budget_warning(
+    size: ContextSize,
+    budget: ContextBudget,
+    result: &ContextPruneResult,
+) -> String {
+    let mut exceeded = Vec::new();
+    if let Some(max) = budget.max_characters
+        && size.characters > max
+    {
+        exceeded.push(format!("characters {} > {}", size.characters, max));
+    }
+    if let Some(max) = budget.max_estimated_tokens
+        && size.estimated_tokens > max
+    {
+        exceeded.push(format!(
+            "estimated_tokens {} > {}",
+            size.estimated_tokens, max
+        ));
+    }
+
+    format!(
+        "context budget exceeded: {}. No context was silently dropped.\n{}",
+        exceeded.join(", "),
+        render_prune_result(result)
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SerializedContext {
+    pub version: u32,
+    pub entries: Vec<SerializedContextEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SerializedContextEntry {
+    pub entry: ContextEntry,
+    pub content_included: bool,
+}
+
+pub fn serialize_context(entries: &[ContextEntry], include_content: bool) -> SerializedContext {
+    SerializedContext {
+        version: 1,
+        entries: entries
+            .iter()
+            .cloned()
+            .map(|mut entry| {
+                if !include_content {
+                    entry.content.clear();
+                    entry.size = ContextSize::from_content("");
+                }
+                SerializedContextEntry {
+                    entry,
+                    content_included: include_content,
+                }
+            })
+            .collect(),
+    }
+}
+
+pub fn redacted_provider_details(provenance: &ContextProvenance) -> Vec<(String, String)> {
+    let mut details: Vec<(String, String)> = provenance
+        .provider_details
+        .iter()
+        .map(|(key, value)| {
+            if provenance.sensitive_provider_fields.contains(key) || looks_sensitive(key) {
+                (key.clone(), "[redacted]".into())
+            } else {
+                (key.clone(), value.clone())
+            }
+        })
+        .collect();
+    details.sort_by(|left, right| left.0.cmp(&right.0));
+    details
 }
 
 fn combined_size(entries: &[&ContextEntry]) -> ContextSize {
@@ -697,6 +945,23 @@ fn combined_size(entries: &[&ContextEntry]) -> ContextSize {
             estimated_tokens: total.estimated_tokens + entry.size.estimated_tokens,
         },
     )
+}
+
+fn comma_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "none".into()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn looks_sensitive(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.contains("secret")
+        || key.contains("token")
+        || key.contains("password")
+        || key.contains("api_key")
+        || key.contains("apikey")
 }
 
 fn estimate_tokens(characters: usize) -> usize {
@@ -990,6 +1255,111 @@ mod tests {
     }
 
     #[test]
+    fn user_facing_renderers_show_list_details_stats_and_pruning() {
+        let mut entry = sample_entry("visible", ContextPriority::High, true);
+        entry.kind = ContextKind::Note;
+        entry.title = "operator note".into();
+        let entries = vec![entry.clone()];
+
+        let list = render_context_list(&entries);
+        assert!(list.contains("ctx-visible"));
+        assert!(list.contains("operator note"));
+        assert!(list.contains("high"));
+
+        let details = render_context_details(&entry);
+        assert!(details.contains("ID: ctx-visible"));
+        assert!(details.contains("Pinned: true"));
+        assert!(details.contains("visible"));
+
+        let stats = render_context_stats(
+            ContextStats {
+                total_entries: 1,
+                enabled_entries: 1,
+                disabled_entries: 0,
+                pinned_entries: 1,
+                enabled_size: entry.size,
+            },
+            ContextBudget {
+                max_characters: Some(100),
+                max_estimated_tokens: Some(25),
+            },
+        );
+        assert!(stats.contains("total_entries: 1"));
+        assert!(stats.contains("character_budget: 7/100"));
+
+        let prune = render_prune_result(&ContextPruneResult {
+            included_ids: vec!["ctx-visible".into()],
+            removed_ids: vec!["ctx-old".into()],
+            final_size: entry.size,
+            over_budget: false,
+        });
+        assert!(prune.contains("included: ctx-visible"));
+        assert!(prune.contains("removed: ctx-old"));
+    }
+
+    #[test]
+    fn context_serialization_excludes_content_by_default() {
+        let entry = sample_entry("secret-ish body", ContextPriority::Normal, false);
+
+        let without_content = serialize_context(std::slice::from_ref(&entry), false);
+        assert_eq!(without_content.version, 1);
+        assert!(!without_content.entries[0].content_included);
+        assert!(without_content.entries[0].entry.content.is_empty());
+
+        let with_content = serialize_context(std::slice::from_ref(&entry), true);
+        assert!(with_content.entries[0].content_included);
+        assert_eq!(with_content.entries[0].entry.content, "secret-ish body");
+    }
+
+    #[test]
+    fn provider_details_redact_sensitive_fields() {
+        let mut provenance = ContextProvenance::manual();
+        provenance
+            .provider_details
+            .insert("api_key".into(), "sk-test".into());
+        provenance
+            .provider_details
+            .insert("plain".into(), "visible".into());
+        provenance
+            .provider_details
+            .insert("custom".into(), "hidden".into());
+        provenance.sensitive_provider_fields.push("custom".into());
+
+        let details = redacted_provider_details(&provenance);
+
+        assert!(details.contains(&("api_key".into(), "[redacted]".into())));
+        assert!(details.contains(&("custom".into(), "[redacted]".into())));
+        assert!(details.contains(&("plain".into(), "visible".into())));
+    }
+
+    #[test]
+    fn budget_warning_identifies_exceeded_limits() {
+        let warning = budget_warning(
+            ContextSize {
+                characters: 10,
+                estimated_tokens: 3,
+            },
+            ContextBudget {
+                max_characters: Some(5),
+                max_estimated_tokens: Some(2),
+            },
+            &ContextPruneResult {
+                included_ids: vec!["ctx-002".into()],
+                removed_ids: vec!["ctx-001".into()],
+                final_size: ContextSize {
+                    characters: 4,
+                    estimated_tokens: 1,
+                },
+                over_budget: false,
+            },
+        );
+
+        assert!(warning.contains("characters 10 > 5"));
+        assert!(warning.contains("estimated_tokens 3 > 2"));
+        assert!(warning.contains("removed: ctx-001"));
+    }
+
+    #[test]
     fn context_errors_render_user_facing_messages() {
         assert_eq!(
             ContextError::NotFound("ctx-999".into()).to_string(),
@@ -1018,6 +1388,7 @@ mod tests {
                 "manual".to_string(),
                 "file".to_string(),
                 "command_output".to_string(),
+                "stdin".to_string(),
                 "directory_summary".to_string()
             ]
         );
@@ -1139,6 +1510,29 @@ mod tests {
             })
             .expect("stderr only");
         assert_eq!(stderr.content, "stderr:\nfailed");
+    }
+
+    #[test]
+    fn stdin_provider_records_stdin_provenance_without_guessing_command() {
+        let entry = StdinContextProvider
+            .collect(ContextProviderRequest {
+                content: Some("piped text".into()),
+                cwd: Some(PathBuf::from("/repo")),
+                ..ContextProviderRequest::default()
+            })
+            .expect("stdin context");
+
+        assert_eq!(entry.kind, ContextKind::CommandOutput);
+        assert_eq!(entry.provenance.origin, ContextOrigin::Stdin);
+        assert_eq!(entry.provenance.command, None);
+        assert_eq!(entry.provenance.cwd, Some(PathBuf::from("/repo")));
+        assert_eq!(
+            entry
+                .provenance
+                .provider_details
+                .get("upstream_command_known"),
+            Some(&"false".to_string())
+        );
     }
 
     #[test]

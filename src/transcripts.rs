@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::context::{ContextEntry, redacted_provider_details};
 use crate::shell::ShellFamily;
 
 #[derive(Debug, Clone)]
@@ -37,6 +38,28 @@ impl Transcript {
     pub fn record_error(&mut self, content: &str) {
         self.entries
             .push(TranscriptEntry::Error(content.to_string()));
+    }
+
+    pub fn record_context_event(&mut self, action: &str, entry: &ContextEntry, note: &str) {
+        self.entries.push(TranscriptEntry::ContextEvent {
+            action: action.to_string(),
+            id: entry.id.clone(),
+            kind: entry.kind.to_string(),
+            title: entry.title.clone(),
+            enabled: entry.enabled,
+            pinned: entry.pinned,
+            priority: entry.priority.to_string(),
+            characters: entry.size.characters,
+            estimated_tokens: entry.size.estimated_tokens,
+            origin: entry.provenance.origin.to_string(),
+            provider_details: redacted_provider_details(&entry.provenance),
+            note: note.to_string(),
+        });
+    }
+
+    pub fn record_budget_warning(&mut self, warning: &str) {
+        self.entries
+            .push(TranscriptEntry::BudgetWarning(warning.to_string()));
     }
 
     pub fn write_to_dir(&self, directory: &Path) -> Result<PathBuf, TranscriptError> {
@@ -85,6 +108,42 @@ impl Transcript {
                     markdown.push_str(content);
                     markdown.push_str("\n\n");
                 }
+                TranscriptEntry::ContextEvent {
+                    action,
+                    id,
+                    kind,
+                    title,
+                    enabled,
+                    pinned,
+                    priority,
+                    characters,
+                    estimated_tokens,
+                    origin,
+                    provider_details,
+                    note,
+                } => {
+                    markdown.push_str("## Context Event\n\n");
+                    markdown.push_str(&format!("- action: `{action}`\n"));
+                    markdown.push_str(&format!("- id: `{id}`\n"));
+                    markdown.push_str(&format!("- type: `{kind}`\n"));
+                    markdown.push_str(&format!("- title: `{title}`\n"));
+                    markdown.push_str(&format!("- enabled: `{enabled}`\n"));
+                    markdown.push_str(&format!("- pinned: `{pinned}`\n"));
+                    markdown.push_str(&format!("- priority: `{priority}`\n"));
+                    markdown.push_str(&format!(
+                        "- size: `{characters}` chars / `~{estimated_tokens}` tokens\n"
+                    ));
+                    markdown.push_str(&format!("- origin: `{origin}`\n"));
+                    for (key, value) in provider_details {
+                        markdown.push_str(&format!("- {key}: `{value}`\n"));
+                    }
+                    markdown.push_str(&format!("- note: `{note}`\n\n"));
+                }
+                TranscriptEntry::BudgetWarning(content) => {
+                    markdown.push_str("## Context Budget Warning\n\n");
+                    markdown.push_str(content);
+                    markdown.push_str("\n\n");
+                }
             }
         }
 
@@ -97,6 +156,21 @@ enum TranscriptEntry {
     User(String),
     Assistant(String),
     Error(String),
+    ContextEvent {
+        action: String,
+        id: String,
+        kind: String,
+        title: String,
+        enabled: bool,
+        pinned: bool,
+        priority: String,
+        characters: usize,
+        estimated_tokens: usize,
+        origin: String,
+        provider_details: Vec<(String, String)>,
+        note: String,
+    },
+    BudgetWarning(String),
 }
 
 fn unix_millis() -> u128 {
@@ -125,6 +199,7 @@ pub enum TranscriptError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::{ContextEntry, ContextKind, ContextProvenance};
 
     #[test]
     fn writes_markdown_transcript() {
@@ -150,5 +225,41 @@ mod tests {
         assert!(contents.contains("hello"));
         assert!(contents.contains("## Assistant"));
         assert!(contents.contains("## Error"));
+    }
+
+    #[test]
+    fn context_events_record_metadata_and_redact_provider_details() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let mut transcript = Transcript::new(
+            "test-provider".into(),
+            "test-model".into(),
+            ShellFamily::Posix,
+        );
+        let mut provenance = ContextProvenance::manual();
+        provenance
+            .provider_details
+            .insert("api_key".into(), "secret".into());
+        let entry = ContextEntry::new(
+            "ctx-001",
+            ContextKind::Manual,
+            "manual",
+            provenance,
+            "payload should not appear in context event",
+        );
+
+        transcript.record_context_event("add", &entry, "added");
+        transcript.record_budget_warning("context budget exceeded");
+
+        let path = transcript
+            .write_to_dir(tempdir.path())
+            .expect("transcript writes");
+        let contents = fs::read_to_string(path).expect("read transcript");
+
+        assert!(contents.contains("## Context Event"));
+        assert!(contents.contains("action: `add`"));
+        assert!(contents.contains("id: `ctx-001`"));
+        assert!(contents.contains("api_key: `[redacted]`"));
+        assert!(!contents.contains("payload should not appear"));
+        assert!(contents.contains("## Context Budget Warning"));
     }
 }

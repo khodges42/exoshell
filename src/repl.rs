@@ -66,6 +66,7 @@ impl Repl {
                 continue;
             }
 
+            println!("waiting for provider response...");
             match self.app.send(input).await {
                 Ok(response) => println!("\n{}\n", render_assistant_output(&response)),
                 Err(error) => eprintln!("request failed: {error}"),

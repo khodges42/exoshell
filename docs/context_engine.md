@@ -85,6 +85,19 @@ Before a provider request, Exoshell checks enabled context against the configure
 
 Pruning is deterministic and non-mutating. Low-priority unpinned entries are selected for removal first. Pinned entries and critical-priority entries are preserved as long as possible.
 
+## Provider Waiting and Timeouts
+
+Provider requests are bounded by:
+
+```toml
+[provider]
+request_timeout_seconds = 120
+```
+
+The default is 120 seconds. Exoshell prints a waiting message before sending a provider request so slow local model inference is visible. If the timeout is exceeded, Exoshell records the timeout in the transcript and returns to the REPL.
+
+Keyboard interrupt behavior is still terminal-level: interrupting the process stops the active request, and normal transcript writing happens when the REPL exits cleanly.
+
 ## Transcripts
 
 Context lifecycle events are recorded as metadata:

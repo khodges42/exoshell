@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::context::{
@@ -57,10 +58,19 @@ impl App {
             stream: false,
         };
 
-        let response = match self.provider.chat(request).await {
-            Ok(ChatResponse::Complete(response)) => response,
-            Ok(ChatResponse::Stream(chunks)) => chunks.concat(),
-            Err(error) => {
+        let timeout = Duration::from_secs(self.config.provider.request_timeout_seconds);
+        let response = match tokio::time::timeout(timeout, self.provider.chat(request)).await {
+            Err(_) => {
+                let message = format!(
+                    "provider request timed out after {} seconds",
+                    self.config.provider.request_timeout_seconds
+                );
+                self.transcript.record_error(&message);
+                return Err(AppError::Provider(ProviderError::Network(message)));
+            }
+            Ok(Ok(ChatResponse::Complete(response))) => response,
+            Ok(Ok(ChatResponse::Stream(chunks))) => chunks.concat(),
+            Ok(Err(error)) => {
                 self.transcript.record_error(&error.to_string());
                 return Err(error.into());
             }
@@ -612,6 +622,20 @@ mod tests {
         assert!(seen.lock().expect("seen lock").is_empty());
     }
 
+    #[tokio::test]
+    async fn provider_request_times_out() {
+        let mut config = test_config();
+        config.provider.request_timeout_seconds = 0;
+        let mut app = App::new(config, Box::new(SlowProvider));
+
+        let error = app
+            .send("hello".into())
+            .await
+            .expect_err("request should time out");
+
+        assert!(error.to_string().contains("timed out"));
+    }
+
     #[test]
     fn stdin_context_uses_default_provider_path() {
         let mut app = App::new(test_config(), Box::new(NoopProvider));
@@ -644,6 +668,16 @@ mod tests {
         async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
             *self.seen.lock().expect("seen lock") = request.messages;
             Ok(ChatResponse::Complete("captured".into()))
+        }
+    }
+
+    struct SlowProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for SlowProvider {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ProviderError> {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            Ok(ChatResponse::Complete("late".into()))
         }
     }
 

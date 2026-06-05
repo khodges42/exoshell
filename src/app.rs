@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
 use crate::config::Config;
+use crate::context::{
+    ContextProviderRegistry, SessionContextStore, register_default_context_providers,
+};
 use crate::prompts::phase1_system_prompt;
 use crate::providers::{ChatMessage, ChatRequest, ChatResponse, ChatRole, Provider, ProviderError};
 use crate::repl::ReplError;
@@ -12,6 +15,8 @@ pub struct App {
     provider: Box<dyn Provider>,
     messages: Vec<ChatMessage>,
     transcript: Transcript,
+    _context_store: SessionContextStore,
+    _context_registry: ContextProviderRegistry,
 }
 
 impl App {
@@ -25,12 +30,17 @@ impl App {
             ChatRole::System,
             phase1_system_prompt(config.shell.family),
         )];
+        let mut context_registry = ContextProviderRegistry::new();
+        register_default_context_providers(&mut context_registry)
+            .expect("default context providers should register");
 
         Self {
             config,
             provider,
             messages,
             transcript,
+            _context_store: SessionContextStore::new(),
+            _context_registry: context_registry,
         }
     }
 
@@ -151,6 +161,7 @@ impl CliOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ProviderConfig, ShellConfig, TranscriptConfig};
 
     #[test]
     fn parses_config_path() {
@@ -183,5 +194,55 @@ mod tests {
         assert_eq!(options.transcript_enabled, Some(true));
         assert_eq!(options.transcript_directory, Some(PathBuf::from("out")));
         assert!(options.no_color);
+    }
+
+    #[test]
+    fn app_registers_default_context_providers_on_startup() {
+        let app = App::new(test_config(), Box::new(NoopProvider));
+
+        let provider_names: Vec<String> = app
+            ._context_registry
+            .list()
+            .into_iter()
+            .map(|metadata| metadata.name)
+            .collect();
+
+        assert_eq!(
+            provider_names,
+            vec![
+                "manual".to_string(),
+                "file".to_string(),
+                "command_output".to_string(),
+                "directory_summary".to_string()
+            ]
+        );
+        assert_eq!(app._context_store.total_size().characters, 0);
+    }
+
+    struct NoopProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for NoopProvider {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ProviderError> {
+            Ok(ChatResponse::Complete("noop".into()))
+        }
+    }
+
+    fn test_config() -> Config {
+        Config {
+            provider: ProviderConfig {
+                base_url: "http://localhost:11434/v1".into(),
+                api_key: "test-key".into(),
+                api_key_env: "EXOSHELL_TEST_KEY".into(),
+                model: "test-model".into(),
+            },
+            shell: ShellConfig {
+                family: ShellFamily::PowerShell,
+            },
+            transcript: TranscriptConfig {
+                directory: PathBuf::from("transcripts"),
+                enabled: false,
+            },
+        }
     }
 }

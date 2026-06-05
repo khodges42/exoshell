@@ -100,3 +100,4 @@ Preserve existing codenames in project history.
 Historical codenames should be tracked in docs/versioning.md below
 
 * 0.1.0 packet-kobold
+* 0.2.0 context-relic

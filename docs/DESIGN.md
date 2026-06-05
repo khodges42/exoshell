@@ -432,6 +432,160 @@ Memory scopes may include:
 * session
 * ephemeral
 
+---
+## Context Philosophy
+
+Context is a first-class system within Exoshell.
+
+Most AI systems accumulate context implicitly through hidden memory, opaque retrieval systems, session state, telemetry, or behavioral profiling.
+
+Exoshell rejects this model.
+
+Context should be explicit.
+
+The operator should always be able to answer:
+
+* What information is being sent to the model?
+* Where did it come from?
+* Why is it present?
+* How large is it?
+* How can I remove it?
+
+Context is not hidden machinery.
+
+Context is instrumentation.
+
+### Context As Cargo
+
+Exoshell treats context as cargo carried into a conversation.
+
+The operator chooses what to bring.
+
+Examples include:
+
+* files
+* command output
+* logs
+* notes
+* repository summaries
+* notebook entries
+* search results
+* git state
+
+Context should never silently appear.
+
+The operator should deliberately attach information when it becomes useful.
+
+### Inspectability
+
+All active context should be visible.
+
+The user should be able to inspect:
+
+* source
+* size
+* type
+* age
+* priority
+* inclusion status
+
+before a request is sent to a model.
+
+The system should make context visible enough that an operator can reason about it the same way they reason about shell pipelines.
+
+### Provenance
+
+Every context entry should retain provenance.
+
+The operator should be able to determine:
+
+* where context originated
+* when it was added
+* how it entered the session
+
+Examples:
+
+* manually pasted
+* loaded from a file
+* generated from git
+* generated from search
+* imported from a notebook
+
+Context without provenance is difficult to trust.
+
+### Explicit Inclusion
+
+Possessing context and sending context are separate concepts.
+
+A context entry may exist within a session without being included in model requests.
+
+Operators should be able to:
+
+* enable context
+* disable context
+* pin context
+* prioritize context
+* remove context
+
+without destroying underlying information.
+
+### Context Budgets
+
+Context is a finite resource.
+
+Exoshell should expose:
+
+* approximate token usage
+* approximate character usage
+* pruning decisions
+* compression decisions
+
+Users should never be surprised by context loss.
+
+If context must be reduced, the system should explain:
+
+* what was removed
+* why it was removed
+* what remains
+
+### Context Is Not Memory
+
+Context and memory serve different purposes.
+
+Context is active operational state.
+
+Memory is retained knowledge.
+
+Context is temporary, task-oriented, and immediately relevant.
+
+Memory is persistent, searchable, and intentionally preserved.
+
+Exoshell should maintain a clear boundary between the two.
+
+### Operator Ownership
+
+The operator owns context.
+
+Not the model.
+
+Not the application.
+
+Not a hidden retrieval system.
+
+Context should remain:
+
+* visible
+* editable
+* removable
+* exportable
+* inspectable
+
+at all times.
+
+A practitioner should never need faith to understand what information Exoshell is using.
+
+The system should make context obvious enough that trust emerges naturally from visibility.
+
 ⸻
 
 Logging Philosophy

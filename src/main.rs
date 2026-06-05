@@ -1,5 +1,6 @@
 mod app;
 mod config;
+pub mod context;
 mod formatting;
 mod prompts;
 mod providers;

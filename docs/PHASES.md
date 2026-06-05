@@ -1,161 +1,465 @@
-# Exoshell Phases
+# Roadmap
 
-This roadmap turns the project vision into concrete build phases. The phases are intentionally ordered from the smallest useful shell-adjacent assistant toward the broader cognitive shell described in `README.md` and `docs/DESIGN.md`.
+Detailed milestone task lists live in `docs/tasks/`.
 
-## Phase 1: Shell-Adjacent Model Chat
+Current ordering:
 
-Goal: ship a usable terminal program that lets a user talk to a model from PowerShell, bash, zsh, and similar shells without replacing the shell.
+* Phase 1 is closed.
+* Phase 1.5 establishes the explicit context engine foundation before Phase 2.
+* Phase 2 integrates the context engine with stances, safer command handling, and operator controls.
+* Phase 3 adds project awareness and operational memory on top of visible, user-controlled context.
 
-Core features:
+# Phase 3 Tasks
 
-- CLI entry point, likely `exoshell`, that runs as a normal terminal application.
-- Provider configuration for at least one OpenAI-compatible backend.
-- Local-first-compatible model adapter interface, even if the first implementation targets one backend.
-- Interactive chat loop with streaming responses.
-- Basic command suggestion formatting that distinguishes prose, shell commands, and warnings.
-- Explicit copy/paste-oriented workflow: Exoshell suggests commands, the user remains responsible for execution.
-- Cross-platform terminal behavior on Windows, macOS, and Linux.
-- Shell-family awareness for PowerShell versus POSIX-like shells.
-- Basic session transcript saved as markdown.
-- Minimal config file for provider, model, default shell family, and notebook location.
-- Clear error handling for missing API keys, provider failures, and interrupted requests.
+Phase 3 goal: provide useful project awareness and operational memory while keeping all context visible, inspectable, and user-controlled.
 
-User experience:
-- User should be able to run "exo this is a prompt" and get a response, the program exiting
-- User should be able to run exo (without a prompt) and have an open session, or "exo this is a prompt --stay" (or a more appropriate flag) to keep the shell/conversation open
-- User should be able to pipe (bash) or powershell equivalent into exo and have it treated as a prompt, with the additional context of the command run that sent the pipe, cwd, etc.
-    - For example, "ls | exo" should send a prompt similar to "{"command": "ls", "stdout": "foo bar baz", "cwd": "/foo/bar"}" and any relevant system prompts
-Non-goals:
+## P3-001: Project Root Detection
 
-- PTY control of the user's shell.
-- Hotkeys that inject commands into the shell.
-- Ambient context collection.
-- Tree-sitter repo indexing.
-- Long-term memory.
-- Stances and personalities beyond a fixed default behavior.
-- Autonomous command execution.
+Status: planned.
 
-Exit criteria:
+Outcome: Exoshell can identify and operate against a project root.
 
-- A user can install/run Exoshell, configure a model backend, ask for help from a terminal, receive command suggestions appropriate to PowerShell or bash/zsh, and save the session transcript.
-- The implementation has a small automated test suite for provider abstraction, shell-family prompt behavior, config loading, and transcript writing.
+Acceptance criteria:
 
-## Phase 2: Context, Modes, and Operator Controls
+* Detect Git repositories.
+* Detect project roots using common markers.
+* User can override detected root.
+* Current project root is visible.
+* Tests cover nested repositories and overrides.
 
-Goal: make Exoshell feel like an operational overlay instead of a generic chat client.
+## P3-002: Project Context Model
 
-Core features:
+Status: planned.
 
-- Explicit context commands for adding files, command output, directory summaries, and pasted logs.
-- Session-scoped context panel or context summary visible in the TUI.
-- Stances such as `operator`, `audit`, `teach`, and `quiet`.
-- Hotkeys for accepting, copying, explaining, and discarding suggested commands.
-- Safer command suggestion UI with destructive-command detection and confirmation language.
-- Context budget management with visible token or character estimates.
-- Shell-specific command rendering and explanation for PowerShell and POSIX-like shells.
-- Notebook improvements: title, timestamps, model metadata, commands suggested, and user-marked discoveries.
-- Basic configuration profiles for different providers and shells.
+Outcome: Exoshell has a structured representation of project information.
 
-Non-goals:
+Acceptance criteria:
 
-- Passive screen watching.
-- Full PTY embedding.
-- Repository-wide semantic indexing.
-- Long-term memory outside user-controlled markdown/log files.
+* Project metadata includes root path, repository type, language hints, and discovery timestamps.
+* Metadata is serializable.
+* Metadata can be displayed in the UI.
+* Tests cover serialization and loading.
 
-Exit criteria:
+## P3-003: Repository Summary Generation
 
-- A user can deliberately attach context, switch stance, inspect what context is being sent, and act on suggestions through predictable terminal controls.
+Status: planned.
 
-## Phase 3: Repo Awareness and Operational Notebooks
+Outcome: Exoshell can generate a high-level summary of a repository.
 
-Goal: give Exoshell useful project awareness while keeping memory inspectable and scoped.
+Acceptance criteria:
 
-Core features:
+* Summary includes major directories.
+* Summary includes language breakdown.
+* Summary identifies likely entry points.
+* Summary avoids reading entire repositories by default.
+* Tests cover large repositories.
 
-- Repo detection and project-root selection.
-- File tree summaries with ignore rules.
-- Structural parsing for common languages using tree-sitter where practical.
-- Commands to add source files, symbols, recent git changes, and test output to context.
-- Markdown notebooks scoped by global, repo, task, and session.
-- Searchable operational notes and discoveries.
-- Runbook generation from session notes.
-- Diff-oriented patch suggestions that require user review.
-- Better uncertainty reporting through explicit signal strength.
+## P3-004: Repository Ignore Rules
 
-Non-goals:
+Status: planned.
 
-- Hidden long-term behavioral profiling.
-- Blind patch application.
-- Autonomous multi-file rewrites.
+Outcome: repository scanning remains efficient.
 
-Exit criteria:
+Acceptance criteria:
 
-- A user can open a repo, ask informed questions about local code and recent command output, preserve useful notes, and generate reviewable runbooks or patch suggestions.
+* Honors .gitignore when practical.
+* Supports Exoshell-specific ignore rules.
+* Skips common build artifacts.
+* Ignore behavior is configurable.
+* Tests cover ignore matching.
 
-## Phase 4: Follow Mode and Shell Integration
+## P3-005: File Inventory Builder
 
-Goal: let Exoshell observe explicit shell activity and provide contextual help without becoming a replacement shell.
+Status: planned.
 
-Core features:
+Outcome: users can inspect repository contents.
 
-- PTY or shell-hook integration strategy for supported environments.
-- Follow mode that can ingest selected command history, stdout/stderr snippets, current directory, and exit status.
-- User-visible controls for what is observed and retained.
-- Hotkey workflows for sending command output to Exoshell.
-- Optional paste-to-shell and paste-and-run flows with clear confirmation boundaries.
-- Command outcome interpretation and next-step suggestions.
-- Per-shell integration docs for PowerShell, bash, zsh, and fish.
+Acceptance criteria:
 
-Non-goals:
+* Generates file inventories.
+* Supports filtering by extension.
+* Supports filtering by path.
+* Supports size limits.
+* Tests cover large inventories.
 
-- Covert monitoring.
-- Unreviewed execution.
-- Replacing the user's shell configuration.
+## P3-006: Symbol Discovery Framework
 
-Exit criteria:
+Status: planned.
 
-- A user can work in their normal shell while Exoshell follows explicitly permitted context and offers useful, nonintrusive operational guidance.
+Outcome: Exoshell can discover likely symbols without full semantic indexing.
 
-## Phase 5: Tuning, Extensibility, and Local-First Depth
+Acceptance criteria:
 
-Goal: make Exoshell configurable, hackable, and effective with weaker local models.
+* Extracts functions, structs, classes, interfaces, and modules where practical.
+* Stores symbol metadata.
+* Supports lookup by name.
+* Supports language-specific extractors.
+* Tests cover supported languages.
 
-Core features:
+## P3-007: Language Detector
 
-- Robust local model support through OpenAI-compatible local servers and/or dedicated adapters.
-- Prompt and stance customization.
-- User-editable command policies and safety rules.
-- Extension points for tools, context providers, and notebook processors.
-- Model routing by task type.
-- Context compression and retrieval tuned for smaller models.
-- Export/import of user configuration and notebooks.
-- Advanced visual themes that remain restrained and terminal-native.
+Status: planned.
 
-Non-goals:
+Outcome: Exoshell understands repository language composition.
 
-- Cloud lock-in.
-- Manager analytics.
-- Personality behavior that compromises operational clarity.
+Acceptance criteria:
 
-Exit criteria:
+* Detects primary languages.
+* Detects mixed-language repositories.
+* Handles generated code separately.
+* Displays language summary.
+* Tests cover representative repositories.
 
-- A technical user can tune Exoshell to their environment, run local-first workflows, and extend context/tool behavior without modifying core code.
+## P3-008: Git Status Context Provider
 
-## Phase 6: Mature Cognitive Shell Overlay
+Status: planned.
 
-Goal: converge on the broader vision: a calm, inspectable, practitioner-oriented cognitive shell environment.
+Outcome: users can add current Git state as context.
 
-Core features:
+Acceptance criteria:
 
-- Mature cockpit-style TUI with dense but readable operational instrumentation.
-- Stable shell integrations across major platforms.
-- High-quality repo, session, task, and notebook workflows.
-- Reviewable command, patch, and runbook pipelines.
-- Strong safety posture around destructive commands and hidden state.
-- Comprehensive docs for installation, configuration, shell integration, model backends, stances, notebooks, and local-first operation.
-- Packaging and release automation.
+* Captures branch.
+* Captures modified files.
+* Captures staged files.
+* Captures untracked files.
+* Tests cover detached HEAD and clean repositories.
 
-Exit criteria:
+## P3-009: Recent Commit Context Provider
 
-- Exoshell is a dependable daily-driver assistant for terminal-native practitioners who want AI augmentation while preserving control and understanding.
+Status: planned.
+
+Outcome: users can add recent history to context.
+
+Acceptance criteria:
+
+* Supports configurable commit count.
+* Includes author, timestamp, message, and changed files.
+* Supports filtering by author.
+* Supports filtering by path.
+* Tests cover repositories with no commits.
+
+## P3-010: Diff Context Provider
+
+Status: planned.
+
+Outcome: users can attach diffs to prompts.
+
+Acceptance criteria:
+
+* Supports staged diffs.
+* Supports unstaged diffs.
+* Supports specific files.
+* Large diffs are truncated visibly.
+* Tests cover truncation behavior.
+
+## P3-011: Search Provider Framework
+
+Status: planned.
+
+Outcome: Exoshell can search repositories consistently.
+
+Acceptance criteria:
+
+* Search abstraction exists.
+* Supports text search.
+* Supports path search.
+* Supports symbol search.
+* Tests cover provider behavior.
+
+## P3-012: Ripgrep Integration
+
+Status: planned.
+
+Outcome: repository search is fast and useful.
+
+Acceptance criteria:
+
+* Uses ripgrep when available.
+* Provides fallback behavior.
+* Search results include file and line information.
+* Results are attachable as context.
+* Tests cover common searches.
+
+## P3-013: Source File Context Commands
+
+Status: planned.
+
+Outcome: users can add code directly to context.
+
+Acceptance criteria:
+
+* Supports adding files.
+* Supports adding line ranges.
+* Supports adding symbols.
+* Supports adding search results.
+* Tests cover invalid ranges.
+
+## P3-014: Context Compression Pipeline
+
+Status: planned.
+
+Outcome: large repositories remain usable.
+
+Acceptance criteria:
+
+* Large context can be summarized.
+* Compression preserves source references.
+* Compression is visible to the user.
+* Original context remains inspectable.
+* Tests cover compression logic.
+
+## P3-015: Global Notebook Support
+
+Status: planned.
+
+Outcome: users can maintain global notes.
+
+Acceptance criteria:
+
+* Global notebook exists outside repositories.
+* Notes are markdown.
+* Notes are searchable.
+* Notes are user-editable.
+* Tests cover creation and loading.
+
+## P3-016: Repository Notebook Support
+
+Status: planned.
+
+Outcome: each repository can maintain its own notebook.
+
+Acceptance criteria:
+
+* Notebook is scoped to repository.
+* Notebook persists between sessions.
+* Notebook supports markdown.
+* Notebook location is configurable.
+* Tests cover notebook loading.
+
+## P3-017: Task Notebook Support
+
+Status: planned.
+
+Outcome: users can organize work around tasks.
+
+Acceptance criteria:
+
+* Users can create tasks.
+* Tasks have notes.
+* Tasks can link context entries.
+* Tasks can be completed or archived.
+* Tests cover task lifecycle.
+
+## P3-018: Notebook Search
+
+Status: planned.
+
+Outcome: stored discoveries remain useful.
+
+Acceptance criteria:
+
+* Supports keyword search.
+* Supports filtering by notebook type.
+* Results include source references.
+* Results are attachable to prompts.
+* Tests cover notebook search.
+
+## P3-019: Discovery Linking
+
+Status: planned.
+
+Outcome: findings become navigable knowledge.
+
+Acceptance criteria:
+
+* Discoveries can link files.
+* Discoveries can link symbols.
+* Discoveries can link commits.
+* Discoveries can link tasks.
+* Tests cover link integrity.
+
+## P3-020: Runbook Generation
+
+Status: planned.
+
+Outcome: sessions can produce operational documentation.
+
+Acceptance criteria:
+
+* Generates markdown runbooks.
+* Includes commands, findings, and notes.
+* Includes timestamps.
+* Includes source references.
+* Tests cover runbook generation.
+
+## P3-021: Session Summarization
+
+Status: planned.
+
+Outcome: long sessions remain manageable.
+
+Acceptance criteria:
+
+* Session summaries are generated on demand.
+* Summaries preserve important discoveries.
+* Summaries include linked context.
+* Summaries are written to notebooks.
+* Tests cover summary generation.
+
+## P3-022: Patch Suggestion Model
+
+Status: planned.
+
+Outcome: Exoshell can suggest code modifications.
+
+Acceptance criteria:
+
+* Suggestions are emitted as diffs.
+* Suggestions never modify files automatically.
+* Suggestions include rationale.
+* Suggestions include uncertainty when appropriate.
+* Tests cover patch formatting.
+
+## P3-023: Diff Renderer
+
+Status: planned.
+
+Outcome: code changes are reviewable.
+
+Acceptance criteria:
+
+* Unified diff rendering.
+* Syntax-aware formatting where practical.
+* Clear additions and removals.
+* Works without ANSI color.
+* Tests cover rendering.
+
+## P3-024: Patch Export
+
+Status: planned.
+
+Outcome: users can save suggested patches.
+
+Acceptance criteria:
+
+* Exports standard patch files.
+* Exports markdown review files.
+* Includes metadata.
+* Does not modify repository state.
+* Tests cover export behavior.
+
+## P3-025: Evidence and Confidence Framework
+
+Status: planned.
+
+Outcome: Exoshell communicates uncertainty consistently.
+
+Acceptance criteria:
+
+* Responses distinguish evidence from inference.
+* Confidence labels are documented.
+* Confidence metadata can be rendered.
+* Confidence survives transcript export.
+* Tests cover confidence formatting.
+
+## P3-026: Code Review Stance
+
+Status: planned.
+
+Outcome: Exoshell can behave like a skeptical reviewer.
+
+Acceptance criteria:
+
+* Focuses on correctness.
+* Focuses on maintainability.
+* Focuses on security.
+* Prioritizes findings.
+* Snapshot tests cover stance behavior.
+
+## P3-027: Repository Dashboard
+
+Status: planned.
+
+Outcome: users can inspect project state quickly.
+
+Acceptance criteria:
+
+* Shows repository metadata.
+* Shows notebook summary.
+* Shows recent discoveries.
+* Shows current task.
+* Displays cleanly in terminal environments.
+
+## P3-028: Tree-Sitter Foundation
+
+Status: planned.
+
+Outcome: semantic parsing foundation exists for supported languages.
+
+Acceptance criteria:
+
+* Tree-sitter integration is optional.
+* Supports at least one language initially.
+* Symbol extraction can use tree-sitter.
+* Fallback path exists when unavailable.
+* Tests cover parser loading.
+
+## P3-029: Tree-Sitter Symbol Provider
+
+Status: planned.
+
+Outcome: symbol extraction becomes more accurate.
+
+Acceptance criteria:
+
+* Extracts functions.
+* Extracts classes/structs.
+* Extracts methods.
+* Preserves source locations.
+* Tests cover supported languages.
+
+## P3-030: Phase 3 Documentation
+
+Status: planned.
+
+Outcome: users understand project-aware workflows.
+
+Acceptance criteria:
+
+* Documentation covers repositories.
+* Documentation covers notebooks.
+* Documentation covers patch suggestions.
+* Documentation covers confidence reporting.
+* Documentation covers limitations.
+
+## P3-031: Phase 3 Test Coverage
+
+Status: planned.
+
+Outcome: repository-awareness features remain reliable.
+
+Acceptance criteria:
+
+* cargo test covers discovery, search, notebooks, patch generation, and confidence handling.
+* Snapshot tests protect prompt assembly and patch formatting.
+* Manual integration tests remain separate.
+* Verification workflow is documented.
+
+## P3-032: Phase 3 Manual Acceptance Test
+
+Outcome: repository awareness milestone is validated.
+
+Acceptance criteria:
+
+* Open a repository.
+* Generate repository summary.
+* Add git diff context.
+* Add recent commit context.
+* Search for a symbol.
+* Create a task notebook.
+* Record discoveries.
+* Generate a runbook.
+* Request a patch suggestion.
+* Export the patch.
+* Verify no files are modified automatically.
+* Verify all context remains inspectable.

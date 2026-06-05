@@ -1,0 +1,1217 @@
+use std::collections::HashMap;
+use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContextEntry {
+    pub id: String,
+    pub kind: ContextKind,
+    pub title: String,
+    pub enabled: bool,
+    pub pinned: bool,
+    pub priority: ContextPriority,
+    pub created_at_epoch_ms: u128,
+    pub provenance: ContextProvenance,
+    pub content: String,
+    pub size: ContextSize,
+}
+
+impl ContextEntry {
+    pub fn new(
+        id: impl Into<String>,
+        kind: ContextKind,
+        title: impl Into<String>,
+        provenance: ContextProvenance,
+        content: impl Into<String>,
+    ) -> Self {
+        let content = content.into();
+        Self {
+            id: id.into(),
+            kind,
+            title: title.into(),
+            enabled: true,
+            pinned: false,
+            priority: ContextPriority::default(),
+            created_at_epoch_ms: unix_millis(),
+            provenance,
+            size: ContextSize::from_content(&content),
+            content,
+        }
+    }
+
+    pub fn with_priority(mut self, priority: ContextPriority) -> Self {
+        self.priority = priority;
+        self
+    }
+
+    pub fn with_pinned(mut self, pinned: bool) -> Self {
+        self.pinned = pinned;
+        self
+    }
+
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextKind {
+    File,
+    CommandOutput,
+    DirectorySummary,
+    Log,
+    Note,
+    SearchResult,
+    NotebookEntry,
+    Manual,
+    Unknown(String),
+}
+
+impl fmt::Display for ContextKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::File => formatter.write_str("file"),
+            Self::CommandOutput => formatter.write_str("command_output"),
+            Self::DirectorySummary => formatter.write_str("directory_summary"),
+            Self::Log => formatter.write_str("log"),
+            Self::Note => formatter.write_str("note"),
+            Self::SearchResult => formatter.write_str("search_result"),
+            Self::NotebookEntry => formatter.write_str("notebook_entry"),
+            Self::Manual => formatter.write_str("manual"),
+            Self::Unknown(value) => write!(formatter, "unknown:{value}"),
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextPriority {
+    Low,
+    #[default]
+    Normal,
+    High,
+    Critical,
+}
+
+impl fmt::Display for ContextPriority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Low => formatter.write_str("low"),
+            Self::Normal => formatter.write_str("normal"),
+            Self::High => formatter.write_str("high"),
+            Self::Critical => formatter.write_str("critical"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContextProvenance {
+    pub origin: ContextOrigin,
+    pub source_path: Option<PathBuf>,
+    pub command: Option<String>,
+    pub cwd: Option<PathBuf>,
+    pub provider_details: HashMap<String, String>,
+}
+
+impl ContextProvenance {
+    pub fn new(origin: ContextOrigin) -> Self {
+        Self {
+            origin,
+            source_path: None,
+            command: None,
+            cwd: None,
+            provider_details: HashMap::new(),
+        }
+    }
+
+    pub fn manual() -> Self {
+        Self::new(ContextOrigin::Manual)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextOrigin {
+    Manual,
+    File,
+    CommandOutput,
+    Notebook,
+    Git,
+    Search,
+    Generated,
+    Stdin,
+}
+
+impl fmt::Display for ContextOrigin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Manual => formatter.write_str("manual"),
+            Self::File => formatter.write_str("file"),
+            Self::CommandOutput => formatter.write_str("command_output"),
+            Self::Notebook => formatter.write_str("notebook"),
+            Self::Git => formatter.write_str("git"),
+            Self::Search => formatter.write_str("search"),
+            Self::Generated => formatter.write_str("generated"),
+            Self::Stdin => formatter.write_str("stdin"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContextSize {
+    pub characters: usize,
+    pub estimated_tokens: usize,
+}
+
+impl ContextSize {
+    pub fn from_content(content: &str) -> Self {
+        let characters = content.chars().count();
+        Self {
+            characters,
+            estimated_tokens: estimate_tokens(characters),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextProviderMetadata {
+    pub name: String,
+    pub kind: ContextKind,
+    pub description: String,
+}
+
+pub trait ContextProvider: Send + Sync {
+    fn metadata(&self) -> ContextProviderMetadata;
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ContextProviderRequest {
+    pub title: Option<String>,
+    pub content: Option<String>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub exit_code: Option<i32>,
+    pub path: Option<PathBuf>,
+    pub command: Option<String>,
+    pub cwd: Option<PathBuf>,
+    pub provider_options: HashMap<String, String>,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ContextError {
+    #[error("context not found: {0}")]
+    NotFound(String),
+    #[error("permission denied while reading context: {0}")]
+    PermissionDenied(String),
+    #[error("invalid context input: {0}")]
+    InvalidInput(String),
+    #[error("unsupported context content: {0}")]
+    UnsupportedContent(String),
+    #[error("context is too large: {0}")]
+    TooLarge(String),
+    #[error("context provider failed: {0}")]
+    InternalFailure(String),
+}
+
+pub struct ContextProviderRegistry {
+    providers: HashMap<String, Box<dyn ContextProvider>>,
+    order: Vec<String>,
+}
+
+impl ContextProviderRegistry {
+    pub fn new() -> Self {
+        Self {
+            providers: HashMap::new(),
+            order: Vec::new(),
+        }
+    }
+
+    pub fn register(&mut self, provider: Box<dyn ContextProvider>) -> Result<(), ContextError> {
+        let metadata = provider.metadata();
+        if metadata.name.trim().is_empty() {
+            return Err(ContextError::InvalidInput(
+                "context provider name is empty".into(),
+            ));
+        }
+
+        if self.providers.contains_key(&metadata.name) {
+            return Err(ContextError::InvalidInput(format!(
+                "context provider '{}' is already registered",
+                metadata.name
+            )));
+        }
+
+        self.order.push(metadata.name.clone());
+        self.providers.insert(metadata.name, provider);
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&dyn ContextProvider> {
+        self.providers.get(name).map(|provider| provider.as_ref())
+    }
+
+    pub fn list(&self) -> Vec<ContextProviderMetadata> {
+        self.order
+            .iter()
+            .filter_map(|name| self.providers.get(name))
+            .map(|provider| provider.metadata())
+            .collect()
+    }
+}
+
+impl Default for ContextProviderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub fn register_default_context_providers(
+    registry: &mut ContextProviderRegistry,
+) -> Result<(), ContextError> {
+    registry.register(Box::new(ManualContextProvider))?;
+    registry.register(Box::new(FileContextProvider::default()))?;
+    registry.register(Box::new(CommandOutputContextProvider))?;
+    registry.register(Box::new(DirectorySummaryContextProvider::default()))?;
+    Ok(())
+}
+
+pub struct ManualContextProvider;
+
+impl ContextProvider for ManualContextProvider {
+    fn metadata(&self) -> ContextProviderMetadata {
+        ContextProviderMetadata {
+            name: "manual".into(),
+            kind: ContextKind::Manual,
+            description: "adds user-provided text as explicit context".into(),
+        }
+    }
+
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+        let content = required_non_empty_content(request.content)?;
+        Ok(ContextEntry::new(
+            "",
+            ContextKind::Manual,
+            request.title.unwrap_or_else(|| "manual context".into()),
+            ContextProvenance::manual(),
+            content,
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileContextProvider {
+    pub max_bytes: usize,
+}
+
+impl Default for FileContextProvider {
+    fn default() -> Self {
+        Self {
+            max_bytes: 256 * 1024,
+        }
+    }
+}
+
+impl ContextProvider for FileContextProvider {
+    fn metadata(&self) -> ContextProviderMetadata {
+        ContextProviderMetadata {
+            name: "file".into(),
+            kind: ContextKind::File,
+            description: "loads a UTF-8 text file as explicit context".into(),
+        }
+    }
+
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+        let path = request
+            .path
+            .ok_or_else(|| ContextError::InvalidInput("file path is required".into()))?;
+        let metadata = fs::metadata(&path).map_err(|error| file_read_error(&path, error))?;
+
+        if !metadata.is_file() {
+            return Err(ContextError::InvalidInput(format!(
+                "{} is not a file",
+                path.display()
+            )));
+        }
+
+        let byte_len = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+        if byte_len > self.max_bytes {
+            return Err(ContextError::TooLarge(format!(
+                "{} is {} bytes; limit is {} bytes",
+                path.display(),
+                byte_len,
+                self.max_bytes
+            )));
+        }
+
+        let bytes = fs::read(&path).map_err(|error| file_read_error(&path, error))?;
+        if bytes.contains(&0) {
+            return Err(ContextError::UnsupportedContent(format!(
+                "{} appears to be binary",
+                path.display()
+            )));
+        }
+
+        let content = String::from_utf8(bytes).map_err(|error| {
+            ContextError::UnsupportedContent(format!(
+                "{} is not valid UTF-8: {error}",
+                path.display()
+            ))
+        })?;
+
+        let mut provenance = ContextProvenance::new(ContextOrigin::File);
+        provenance.source_path = Some(path.clone());
+        if let Ok(modified) = metadata.modified()
+            && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            provenance.provider_details.insert(
+                "modified_at_epoch_ms".into(),
+                duration.as_millis().to_string(),
+            );
+        }
+        provenance
+            .provider_details
+            .insert("byte_size".into(), byte_len.to_string());
+
+        Ok(ContextEntry::new(
+            "",
+            ContextKind::File,
+            request
+                .title
+                .unwrap_or_else(|| file_title(&path).unwrap_or_else(|| path.display().to_string())),
+            provenance,
+            content,
+        ))
+    }
+}
+
+pub struct CommandOutputContextProvider;
+
+impl ContextProvider for CommandOutputContextProvider {
+    fn metadata(&self) -> ContextProviderMetadata {
+        ContextProviderMetadata {
+            name: "command_output".into(),
+            kind: ContextKind::CommandOutput,
+            description: "adds user-provided command output without executing commands".into(),
+        }
+    }
+
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+        let content = command_output_content(&request)?;
+        let mut provenance = ContextProvenance::new(ContextOrigin::CommandOutput);
+        provenance.command = request.command;
+        provenance.cwd = request.cwd;
+        provenance
+            .provider_details
+            .insert("provided_by_user".into(), "true".into());
+        if let Some(exit_code) = request.exit_code {
+            provenance
+                .provider_details
+                .insert("exit_code".into(), exit_code.to_string());
+        }
+
+        Ok(ContextEntry::new(
+            "",
+            ContextKind::CommandOutput,
+            request.title.unwrap_or_else(|| "command output".into()),
+            provenance,
+            content,
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DirectorySummaryContextProvider {
+    pub max_depth: usize,
+    pub max_entries: usize,
+}
+
+impl Default for DirectorySummaryContextProvider {
+    fn default() -> Self {
+        Self {
+            max_depth: 2,
+            max_entries: 200,
+        }
+    }
+}
+
+impl ContextProvider for DirectorySummaryContextProvider {
+    fn metadata(&self) -> ContextProviderMetadata {
+        ContextProviderMetadata {
+            name: "directory_summary".into(),
+            kind: ContextKind::DirectorySummary,
+            description: "summarizes directory names without reading file contents".into(),
+        }
+    }
+
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+        let path = request
+            .path
+            .ok_or_else(|| ContextError::InvalidInput("directory path is required".into()))?;
+        let metadata = fs::metadata(&path).map_err(|error| file_read_error(&path, error))?;
+        if !metadata.is_dir() {
+            return Err(ContextError::InvalidInput(format!(
+                "{} is not a directory",
+                path.display()
+            )));
+        }
+
+        let mut summary = DirectorySummary::default();
+        summarize_directory(&path, 0, self.max_depth, self.max_entries, &mut summary)?;
+
+        let mut provenance = ContextProvenance::new(ContextOrigin::Generated);
+        provenance.source_path = Some(path.clone());
+        provenance
+            .provider_details
+            .insert("max_depth".into(), self.max_depth.to_string());
+        provenance
+            .provider_details
+            .insert("max_entries".into(), self.max_entries.to_string());
+        provenance
+            .provider_details
+            .insert("truncated".into(), summary.truncated.to_string());
+
+        Ok(ContextEntry::new(
+            "",
+            ContextKind::DirectorySummary,
+            request
+                .title
+                .unwrap_or_else(|| format!("directory summary: {}", path.display())),
+            provenance,
+            summary.lines.join("\n"),
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionContextStore {
+    entries: Vec<ContextEntry>,
+    next_id: u64,
+}
+
+impl SessionContextStore {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            next_id: 1,
+        }
+    }
+
+    pub fn add(&mut self, mut entry: ContextEntry) -> String {
+        let id = self.next_context_id();
+        entry.id = id.clone();
+        entry.size = ContextSize::from_content(&entry.content);
+        self.entries.push(entry);
+        id
+    }
+
+    pub fn remove(&mut self, id: &str) -> Option<ContextEntry> {
+        let index = self.entries.iter().position(|entry| entry.id == id)?;
+        Some(self.entries.remove(index))
+    }
+
+    pub fn get(&self, id: &str) -> Option<&ContextEntry> {
+        self.entries.iter().find(|entry| entry.id == id)
+    }
+
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut ContextEntry> {
+        self.entries.iter_mut().find(|entry| entry.id == id)
+    }
+
+    pub fn entries(&self) -> &[ContextEntry] {
+        &self.entries
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ContextEntry> {
+        self.entries.iter()
+    }
+
+    pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), ContextError> {
+        let entry = self
+            .get_mut(id)
+            .ok_or_else(|| ContextError::NotFound(id.to_string()))?;
+        entry.enabled = enabled;
+        Ok(())
+    }
+
+    pub fn set_pinned(&mut self, id: &str, pinned: bool) -> Result<(), ContextError> {
+        let entry = self
+            .get_mut(id)
+            .ok_or_else(|| ContextError::NotFound(id.to_string()))?;
+        entry.pinned = pinned;
+        Ok(())
+    }
+
+    pub fn set_priority(
+        &mut self,
+        id: &str,
+        priority: ContextPriority,
+    ) -> Result<(), ContextError> {
+        let entry = self
+            .get_mut(id)
+            .ok_or_else(|| ContextError::NotFound(id.to_string()))?;
+        entry.priority = priority;
+        Ok(())
+    }
+
+    pub fn total_size(&self) -> ContextSize {
+        self.entries.iter().filter(|entry| entry.enabled).fold(
+            ContextSize {
+                characters: 0,
+                estimated_tokens: 0,
+            },
+            |total, entry| ContextSize {
+                characters: total.characters + entry.size.characters,
+                estimated_tokens: total.estimated_tokens + entry.size.estimated_tokens,
+            },
+        )
+    }
+
+    fn next_context_id(&mut self) -> String {
+        let id = format!("ctx-{:03}", self.next_id);
+        self.next_id += 1;
+        id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ContextBudget {
+    pub max_characters: Option<usize>,
+    pub max_estimated_tokens: Option<usize>,
+}
+
+impl ContextBudget {
+    pub fn is_over_budget(&self, size: ContextSize) -> bool {
+        self.max_characters.is_some_and(|max| size.characters > max)
+            || self
+                .max_estimated_tokens
+                .is_some_and(|max| size.estimated_tokens > max)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextPruneResult {
+    pub included_ids: Vec<String>,
+    pub removed_ids: Vec<String>,
+    pub final_size: ContextSize,
+    pub over_budget: bool,
+}
+
+pub fn prune_context(entries: &[ContextEntry], budget: ContextBudget) -> ContextPruneResult {
+    let enabled: Vec<&ContextEntry> = entries.iter().filter(|entry| entry.enabled).collect();
+    let mut included_ids: Vec<String> = enabled.iter().map(|entry| entry.id.clone()).collect();
+    let mut final_size = combined_size(&enabled);
+
+    if !budget.is_over_budget(final_size) {
+        return ContextPruneResult {
+            included_ids,
+            removed_ids: Vec::new(),
+            final_size,
+            over_budget: false,
+        };
+    }
+
+    let mut candidates = enabled;
+    candidates.sort_by_key(|entry| {
+        (
+            entry.pinned,
+            entry.priority,
+            entries
+                .iter()
+                .position(|candidate| candidate.id == entry.id)
+                .unwrap_or(usize::MAX),
+        )
+    });
+
+    let mut removed_ids = Vec::new();
+    for candidate in candidates {
+        if !budget.is_over_budget(final_size) {
+            break;
+        }
+
+        included_ids.retain(|id| id != &candidate.id);
+        removed_ids.push(candidate.id.clone());
+        final_size.characters = final_size
+            .characters
+            .saturating_sub(candidate.size.characters);
+        final_size.estimated_tokens = final_size
+            .estimated_tokens
+            .saturating_sub(candidate.size.estimated_tokens);
+    }
+
+    ContextPruneResult {
+        included_ids,
+        removed_ids,
+        final_size,
+        over_budget: budget.is_over_budget(final_size),
+    }
+}
+
+pub fn render_prompt_context(entries: &[ContextEntry]) -> String {
+    let mut rendered = String::new();
+    for entry in entries.iter().filter(|entry| entry.enabled) {
+        rendered.push_str(&format!("[Context: {}]\n", entry.id));
+        rendered.push_str(&format!("Type: {}\n", entry.kind));
+        rendered.push_str(&format!("Title: {}\n", entry.title));
+        rendered.push_str(&format!("Origin: {}\n", entry.provenance.origin));
+        if let Some(path) = &entry.provenance.source_path {
+            rendered.push_str(&format!("Path: {}\n", path.display()));
+        }
+        if let Some(command) = &entry.provenance.command {
+            rendered.push_str(&format!("Command: {command}\n"));
+        }
+        if let Some(cwd) = &entry.provenance.cwd {
+            rendered.push_str(&format!("Cwd: {}\n", cwd.display()));
+        }
+        rendered.push_str(&format!("Priority: {}\n", entry.priority));
+        rendered.push('\n');
+        rendered.push_str(&entry.content);
+        rendered.push_str("\n\n");
+    }
+
+    rendered.trim_end().to_string()
+}
+
+fn combined_size(entries: &[&ContextEntry]) -> ContextSize {
+    entries.iter().fold(
+        ContextSize {
+            characters: 0,
+            estimated_tokens: 0,
+        },
+        |total, entry| ContextSize {
+            characters: total.characters + entry.size.characters,
+            estimated_tokens: total.estimated_tokens + entry.size.estimated_tokens,
+        },
+    )
+}
+
+fn estimate_tokens(characters: usize) -> usize {
+    characters.div_ceil(4)
+}
+
+fn required_non_empty_content(content: Option<String>) -> Result<String, ContextError> {
+    let content =
+        content.ok_or_else(|| ContextError::InvalidInput("context content is required".into()))?;
+    if content.trim().is_empty() {
+        return Err(ContextError::InvalidInput(
+            "context content cannot be empty".into(),
+        ));
+    }
+
+    Ok(content)
+}
+
+fn command_output_content(request: &ContextProviderRequest) -> Result<String, ContextError> {
+    if request.stdout.is_none() && request.stderr.is_none() {
+        return required_non_empty_content(request.content.clone());
+    }
+
+    let mut parts = Vec::new();
+    if let Some(stdout) = &request.stdout
+        && !stdout.trim().is_empty()
+    {
+        parts.push(format!("stdout:\n{stdout}"));
+    }
+    if let Some(stderr) = &request.stderr
+        && !stderr.trim().is_empty()
+    {
+        parts.push(format!("stderr:\n{stderr}"));
+    }
+
+    if parts.is_empty() {
+        return Err(ContextError::InvalidInput(
+            "command output cannot be empty".into(),
+        ));
+    }
+
+    Ok(parts.join("\n\n"))
+}
+
+fn file_read_error(path: &Path, error: std::io::Error) -> ContextError {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => ContextError::NotFound(path.display().to_string()),
+        std::io::ErrorKind::PermissionDenied => {
+            ContextError::PermissionDenied(path.display().to_string())
+        }
+        _ => ContextError::InternalFailure(format!("{}: {error}", path.display())),
+    }
+}
+
+fn file_title(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string())
+}
+
+#[derive(Default)]
+struct DirectorySummary {
+    lines: Vec<String>,
+    truncated: bool,
+}
+
+fn summarize_directory(
+    path: &Path,
+    depth: usize,
+    max_depth: usize,
+    max_entries: usize,
+    summary: &mut DirectorySummary,
+) -> Result<(), ContextError> {
+    if depth > max_depth || summary.lines.len() >= max_entries {
+        summary.truncated = true;
+        return Ok(());
+    }
+
+    let mut entries = fs::read_dir(path)
+        .map_err(|error| file_read_error(path, error))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| file_read_error(path, error))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        if summary.lines.len() >= max_entries {
+            summary.truncated = true;
+            break;
+        }
+
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if is_noisy_path(&file_name) {
+            continue;
+        }
+
+        let entry_path = entry.path();
+        let kind = entry
+            .file_type()
+            .map_err(|error| file_read_error(&entry_path, error))?;
+        let suffix = if kind.is_dir() { "/" } else { "" };
+        let indent = "  ".repeat(depth);
+        summary.lines.push(format!("{indent}{file_name}{suffix}"));
+
+        if kind.is_dir() {
+            summarize_directory(&entry_path, depth + 1, max_depth, max_entries, summary)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn is_noisy_path(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "target"
+            | "node_modules"
+            | ".venv"
+            | "venv"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".cache"
+    )
+}
+
+fn unix_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time before UNIX epoch")
+        .as_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_entry_serializes_round_trip() {
+        let mut provenance = ContextProvenance::new(ContextOrigin::File);
+        provenance.source_path = Some(PathBuf::from("Cargo.toml"));
+        let entry = ContextEntry::new(
+            "ctx-001",
+            ContextKind::File,
+            "Cargo.toml",
+            provenance,
+            "[package]\nname = \"exoshell\"",
+        )
+        .with_priority(ContextPriority::High)
+        .with_pinned(true);
+
+        let json = serde_json::to_string(&entry).expect("serialize entry");
+        let decoded: ContextEntry = serde_json::from_str(&json).expect("deserialize entry");
+
+        assert_eq!(decoded.id, "ctx-001");
+        assert_eq!(decoded.kind, ContextKind::File);
+        assert_eq!(decoded.priority, ContextPriority::High);
+        assert!(decoded.pinned);
+        assert_eq!(decoded.provenance.origin, ContextOrigin::File);
+        assert_eq!(decoded.size.characters, entry.content.chars().count());
+    }
+
+    #[test]
+    fn priority_defaults_to_normal_and_orders_for_pruning() {
+        let entry = ContextEntry::new(
+            "ctx-001",
+            ContextKind::Manual,
+            "note",
+            ContextProvenance::manual(),
+            "content",
+        );
+
+        assert_eq!(entry.priority, ContextPriority::Normal);
+        assert!(ContextPriority::Low < ContextPriority::Normal);
+        assert!(ContextPriority::Normal < ContextPriority::High);
+        assert!(ContextPriority::High < ContextPriority::Critical);
+    }
+
+    #[test]
+    fn registry_registers_lists_and_rejects_duplicates() {
+        let mut registry = ContextProviderRegistry::new();
+        registry
+            .register(Box::new(FakeProvider::new("manual")))
+            .expect("register provider");
+
+        assert!(registry.get("manual").is_some());
+        assert_eq!(registry.list()[0].name, "manual");
+
+        let error = registry
+            .register(Box::new(FakeProvider::new("manual")))
+            .expect_err("duplicate should fail");
+
+        assert!(matches!(error, ContextError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn provider_trait_returns_context_entries() {
+        let provider = FakeProvider::new("manual");
+        let entry = provider
+            .collect(ContextProviderRequest {
+                content: Some("operator note".into()),
+                ..ContextProviderRequest::default()
+            })
+            .expect("collect entry");
+
+        assert_eq!(entry.kind, ContextKind::Manual);
+        assert_eq!(entry.content, "operator note");
+    }
+
+    #[test]
+    fn store_generates_stable_human_readable_ids_and_mutates_state() {
+        let mut store = SessionContextStore::new();
+        let first = store.add(sample_entry("placeholder", ContextPriority::Normal, false));
+        let second = store.add(sample_entry("placeholder", ContextPriority::Normal, false));
+
+        assert_eq!(first, "ctx-001");
+        assert_eq!(second, "ctx-002");
+        assert_eq!(store.entries()[0].id, "ctx-001");
+
+        store.set_enabled(&first, false).expect("disable");
+        store.set_pinned(&first, true).expect("pin");
+        store
+            .set_priority(&first, ContextPriority::Critical)
+            .expect("priority");
+
+        let entry = store.get(&first).expect("entry exists");
+        assert!(!entry.enabled);
+        assert!(entry.pinned);
+        assert_eq!(entry.priority, ContextPriority::Critical);
+
+        assert_eq!(store.remove(&first).expect("removed").id, "ctx-001");
+        assert!(store.get(&first).is_none());
+        assert_eq!(store.get(&second).expect("second remains").id, "ctx-002");
+    }
+
+    #[test]
+    fn budget_calculation_uses_enabled_entries_only() {
+        let mut store = SessionContextStore::new();
+        let enabled_id = store.add(sample_entry("a", ContextPriority::Normal, false));
+        let disabled_id = store.add(sample_entry("12345678", ContextPriority::Normal, false));
+        store.set_enabled(&disabled_id, false).expect("disable");
+
+        let size = store.total_size();
+
+        assert_eq!(store.get(&enabled_id).expect("enabled").size.characters, 1);
+        assert_eq!(size.characters, 1);
+        assert_eq!(size.estimated_tokens, 1);
+    }
+
+    #[test]
+    fn pruning_removes_low_priority_unpinned_entries_first() {
+        let entries = vec![
+            sample_entry("low", ContextPriority::Low, false),
+            sample_entry("critical", ContextPriority::Critical, false),
+            sample_entry("pinned low", ContextPriority::Low, true),
+        ];
+        let result = prune_context(
+            &entries,
+            ContextBudget {
+                max_characters: Some(18),
+                max_estimated_tokens: None,
+            },
+        );
+
+        assert_eq!(result.removed_ids, vec!["ctx-low"]);
+        assert_eq!(
+            result.included_ids,
+            vec!["ctx-critical".to_string(), "ctx-pinned-low".to_string()]
+        );
+        assert!(!result.over_budget);
+    }
+
+    #[test]
+    fn prompt_context_renderer_skips_disabled_entries_and_keeps_metadata() {
+        let mut file = sample_entry("file body", ContextPriority::High, false);
+        file.kind = ContextKind::File;
+        file.title = "Cargo.toml".into();
+        file.provenance = ContextProvenance::new(ContextOrigin::File);
+        file.provenance.source_path = Some(PathBuf::from("/repo/Cargo.toml"));
+        let disabled = sample_entry("disabled", ContextPriority::Normal, false).with_enabled(false);
+
+        let rendered = render_prompt_context(&[file, disabled]);
+
+        assert!(rendered.contains("[Context: ctx-file-body]"));
+        assert!(rendered.contains("Type: file"));
+        assert!(rendered.contains("Title: Cargo.toml"));
+        assert!(rendered.contains("Origin: file"));
+        assert!(rendered.contains("Path: /repo/Cargo.toml"));
+        assert!(rendered.contains("file body"));
+        assert!(!rendered.contains("disabled"));
+    }
+
+    #[test]
+    fn context_errors_render_user_facing_messages() {
+        assert_eq!(
+            ContextError::NotFound("ctx-999".into()).to_string(),
+            "context not found: ctx-999"
+        );
+        assert_eq!(
+            ContextError::TooLarge("file exceeds limit".into()).to_string(),
+            "context is too large: file exceeds limit"
+        );
+    }
+
+    #[test]
+    fn default_providers_register_in_order() {
+        let mut registry = ContextProviderRegistry::new();
+        register_default_context_providers(&mut registry).expect("register defaults");
+
+        let names: Vec<String> = registry
+            .list()
+            .into_iter()
+            .map(|metadata| metadata.name)
+            .collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "manual".to_string(),
+                "file".to_string(),
+                "command_output".to_string(),
+                "directory_summary".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn manual_provider_rejects_empty_context() {
+        let error = ManualContextProvider
+            .collect(ContextProviderRequest {
+                content: Some("   ".into()),
+                ..ContextProviderRequest::default()
+            })
+            .expect_err("empty manual context should fail");
+
+        assert!(matches!(error, ContextError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn file_provider_loads_utf8_text_with_provenance() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let path = tempdir.path().join("note.txt");
+        std::fs::write(&path, "hello file").expect("write file");
+
+        let entry = FileContextProvider { max_bytes: 1024 }
+            .collect(ContextProviderRequest {
+                path: Some(path.clone()),
+                ..ContextProviderRequest::default()
+            })
+            .expect("file context");
+
+        assert_eq!(entry.kind, ContextKind::File);
+        assert_eq!(entry.title, "note.txt");
+        assert_eq!(entry.content, "hello file");
+        assert_eq!(entry.provenance.origin, ContextOrigin::File);
+        assert_eq!(entry.provenance.source_path, Some(path));
+        assert_eq!(
+            entry.provenance.provider_details.get("byte_size"),
+            Some(&"10".to_string())
+        );
+    }
+
+    #[test]
+    fn file_provider_rejects_missing_binary_and_oversized_files() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let missing = tempdir.path().join("missing.txt");
+        let missing_error = FileContextProvider { max_bytes: 1024 }
+            .collect(ContextProviderRequest {
+                path: Some(missing),
+                ..ContextProviderRequest::default()
+            })
+            .expect_err("missing file should fail");
+        assert!(matches!(missing_error, ContextError::NotFound(_)));
+
+        let binary = tempdir.path().join("binary.bin");
+        std::fs::write(&binary, [1, 0, 2]).expect("write binary");
+        let binary_error = FileContextProvider { max_bytes: 1024 }
+            .collect(ContextProviderRequest {
+                path: Some(binary),
+                ..ContextProviderRequest::default()
+            })
+            .expect_err("binary file should fail");
+        assert!(matches!(binary_error, ContextError::UnsupportedContent(_)));
+
+        let large = tempdir.path().join("large.txt");
+        std::fs::write(&large, "abcdef").expect("write large");
+        let large_error = FileContextProvider { max_bytes: 3 }
+            .collect(ContextProviderRequest {
+                path: Some(large),
+                ..ContextProviderRequest::default()
+            })
+            .expect_err("large file should fail");
+        assert!(matches!(large_error, ContextError::TooLarge(_)));
+    }
+
+    #[test]
+    fn command_output_provider_labels_user_provided_output() {
+        let entry = CommandOutputContextProvider
+            .collect(ContextProviderRequest {
+                title: Some("cargo test output".into()),
+                stdout: Some("test result: ok".into()),
+                stderr: Some("warning: slow test".into()),
+                command: Some("cargo test".into()),
+                cwd: Some(PathBuf::from("/repo")),
+                exit_code: Some(0),
+                ..ContextProviderRequest::default()
+            })
+            .expect("command output context");
+
+        assert_eq!(entry.kind, ContextKind::CommandOutput);
+        assert!(entry.content.contains("stdout:\ntest result: ok"));
+        assert!(entry.content.contains("stderr:\nwarning: slow test"));
+        assert_eq!(entry.provenance.origin, ContextOrigin::CommandOutput);
+        assert_eq!(entry.provenance.command, Some("cargo test".into()));
+        assert_eq!(entry.provenance.cwd, Some(PathBuf::from("/repo")));
+        assert_eq!(
+            entry.provenance.provider_details.get("provided_by_user"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            entry.provenance.provider_details.get("exit_code"),
+            Some(&"0".to_string())
+        );
+    }
+
+    #[test]
+    fn command_output_provider_accepts_stdout_only_and_stderr_only() {
+        let stdout = CommandOutputContextProvider
+            .collect(ContextProviderRequest {
+                stdout: Some("ok".into()),
+                ..ContextProviderRequest::default()
+            })
+            .expect("stdout only");
+        assert_eq!(stdout.content, "stdout:\nok");
+
+        let stderr = CommandOutputContextProvider
+            .collect(ContextProviderRequest {
+                stderr: Some("failed".into()),
+                ..ContextProviderRequest::default()
+            })
+            .expect("stderr only");
+        assert_eq!(stderr.content, "stderr:\nfailed");
+    }
+
+    #[test]
+    fn directory_summary_provider_skips_noisy_paths_and_truncates() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(tempdir.path().join(".git")).expect("git dir");
+        std::fs::create_dir(tempdir.path().join("src")).expect("src dir");
+        std::fs::write(tempdir.path().join("src").join("main.rs"), "fn main() {}")
+            .expect("main file");
+        std::fs::write(tempdir.path().join("README.md"), "# readme").expect("readme");
+
+        let entry = DirectorySummaryContextProvider {
+            max_depth: 2,
+            max_entries: 2,
+        }
+        .collect(ContextProviderRequest {
+            path: Some(tempdir.path().to_path_buf()),
+            ..ContextProviderRequest::default()
+        })
+        .expect("directory summary");
+
+        assert_eq!(entry.kind, ContextKind::DirectorySummary);
+        assert!(!entry.content.contains(".git"));
+        assert!(entry.content.contains("README.md") || entry.content.contains("src/"));
+        assert_eq!(
+            entry.provenance.provider_details.get("truncated"),
+            Some(&"true".to_string())
+        );
+    }
+
+    struct FakeProvider {
+        name: String,
+    }
+
+    impl FakeProvider {
+        fn new(name: &str) -> Self {
+            Self { name: name.into() }
+        }
+    }
+
+    impl ContextProvider for FakeProvider {
+        fn metadata(&self) -> ContextProviderMetadata {
+            ContextProviderMetadata {
+                name: self.name.clone(),
+                kind: ContextKind::Manual,
+                description: "fake manual provider".into(),
+            }
+        }
+
+        fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+            let content = request
+                .content
+                .ok_or_else(|| ContextError::InvalidInput("content is required".into()))?;
+
+            Ok(ContextEntry::new(
+                "",
+                ContextKind::Manual,
+                request.title.unwrap_or_else(|| "manual".into()),
+                ContextProvenance::manual(),
+                content,
+            ))
+        }
+    }
+
+    fn sample_entry(content: &str, priority: ContextPriority, pinned: bool) -> ContextEntry {
+        ContextEntry::new(
+            format!("ctx-{}", content.replace(' ', "-")),
+            ContextKind::Manual,
+            content,
+            ContextProvenance::manual(),
+            content,
+        )
+        .with_priority(priority)
+        .with_pinned(pinned)
+    }
+}

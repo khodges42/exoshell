@@ -26,7 +26,11 @@ Phase 1 is closed.
 
 The current implementation supports the first shell-adjacent model chat milestone: a Rust CLI, OpenAI-compatible provider abstraction, PowerShell/POSIX shell-family selection, command-suggestion formatting, markdown transcripts, and a basic interactive REPL.
 
-The roadmap is tracked in [docs/PHASES.md](docs/PHASES.md). Phase 2 moves toward explicit context, modes, hotkeys, and stronger operator controls.
+The codebase also contains the initial Phase 1.5 context engine foundation: context entries, provenance metadata, priority and size estimates, a session context store, provider registry, default manual/file/command-output/directory-summary providers, deterministic pruning, and prompt-context rendering. REPL context commands are still planned.
+
+The active milestone is Phase 1.5, the explicit context engine foundation tracked in [docs/tasks/phase15_context_tasks.md](docs/tasks/phase15_context_tasks.md). Phase 2 builds on that context engine with stances, safer command handling, hotkeys, and stronger operator controls.
+
+The broader roadmap is tracked in [docs/PHASES.md](docs/PHASES.md) and [docs/tasks](docs/tasks).
 
 ## Running Locally
 

@@ -63,10 +63,7 @@ impl CommandRisk {
         if self.reasons.is_empty() {
             None
         } else {
-            Some(format!(
-                "review required: {}",
-                self.reasons.join("; ")
-            ))
+            Some(format!("review required: {}", self.reasons.join("; ")))
         }
     }
 }
@@ -132,7 +129,9 @@ pub fn detect_command_risk(command: &str, shell: CommandShell) -> CommandRisk {
 
     if lowered.contains("rm -rf")
         || lowered.contains("rm -fr")
-        || lowered.contains("remove-item") && lowered.contains("-recurse") && lowered.contains("-force")
+        || lowered.contains("remove-item")
+            && lowered.contains("-recurse")
+            && lowered.contains("-force")
         || lowered.contains("del /s")
     {
         reasons.push("recursive or forced deletion".into());
@@ -200,7 +199,11 @@ pub fn render_suggestions(suggestions: &[CommandSuggestion]) -> String {
             "- {} [{}]{}",
             suggestion.id,
             suggestion.shell,
-            if suggestion.discarded { " discarded" } else { "" }
+            if suggestion.discarded {
+                " discarded"
+            } else {
+                ""
+            }
         ));
         if let Some(risk) = suggestion.model_risk {
             rendered.push_str(&format!(" model_risk={risk}"));
@@ -210,7 +213,9 @@ pub fn render_suggestions(suggestions: &[CommandSuggestion]) -> String {
         }
         rendered.push('\n');
     }
-    rendered.push_str("Use /copy <id>, /explain <id>, or /discard <id>. Exoshell does not execute commands.");
+    rendered.push_str(
+        "Use /copy <id>, /explain <id>, or /discard <id>. Exoshell does not execute commands.",
+    );
     rendered
 }
 

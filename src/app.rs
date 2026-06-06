@@ -368,7 +368,8 @@ impl App {
         if let Some(warning) = suggestion.detected_risk.warning() {
             explanation.push_str(&format!("{warning}\n"));
         } else {
-            explanation.push_str("No obvious destructive pattern was detected. Review before running.\n");
+            explanation
+                .push_str("No obvious destructive pattern was detected. Review before running.\n");
         }
         self.transcript
             .record_command_action(id, "explain", "operator requested explanation");
@@ -577,10 +578,11 @@ impl CliOptions {
                     let value = args.next().ok_or_else(|| {
                         crate::config::ConfigError::Invalid("--stance requires a value".into())
                     })?;
-                    options.stance =
-                        Some(value.parse().map_err(|error: crate::prompts::StanceError| {
+                    options.stance = Some(value.parse().map_err(
+                        |error: crate::prompts::StanceError| {
                             crate::config::ConfigError::Invalid(error.to_string())
-                        })?);
+                        },
+                    )?);
                 }
                 "--no-transcript" => options.transcript_enabled = Some(false),
                 "--transcript-dir" => {

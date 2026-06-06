@@ -236,7 +236,10 @@ enum TranscriptEntry {
         note: String,
     },
     BudgetWarning(String),
-    StanceChange { previous: String, current: String },
+    StanceChange {
+        previous: String,
+        current: String,
+    },
     CommandSuggestion {
         id: String,
         shell: String,

@@ -6,6 +6,8 @@ A cognitive shell for engineers who still want the controls.
 
 Exoshell is a local-first, shell-adjacent assistant for practitioners who want AI help without giving up operational awareness or control. The shell remains primary; Exoshell suggests, explains, preserves context, and keeps the human in the loop. Exoshell is not designed for “vibe coding.”
 
+Start here: [Quickstart and Tour](docs/quickstart.md).
+
 For the full project philosophy and design direction, read [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Philosophy

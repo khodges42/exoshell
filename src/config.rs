@@ -6,12 +6,14 @@ use serde::Deserialize;
 
 use crate::app::CliOptions;
 use crate::context::ContextBudget;
+use crate::prompts::Stance;
 use crate::shell::ShellFamily;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub provider: ProviderConfig,
     pub shell: ShellConfig,
+    pub interaction: InteractionConfig,
     pub transcript: TranscriptConfig,
     pub context: ContextConfig,
 }
@@ -28,6 +30,11 @@ pub struct ProviderConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellConfig {
     pub family: ShellFamily,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractionConfig {
+    pub stance: Stance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +62,7 @@ impl ContextConfig {
 struct RawConfig {
     provider: Option<RawProviderConfig>,
     shell: Option<RawShellConfig>,
+    interaction: Option<RawInteractionConfig>,
     transcript: Option<RawTranscriptConfig>,
     context: Option<RawContextConfig>,
 }
@@ -70,6 +78,11 @@ struct RawProviderConfig {
 #[derive(Debug, Deserialize, Default)]
 struct RawShellConfig {
     family: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawInteractionConfig {
+    stance: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -97,6 +110,7 @@ impl Config {
     fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
         let provider = raw.provider.unwrap_or_default();
         let shell = raw.shell.unwrap_or_default();
+        let interaction = raw.interaction.unwrap_or_default();
         let transcript = raw.transcript.unwrap_or_default();
         let context = raw.context.unwrap_or_default();
 
@@ -112,6 +126,11 @@ impl Config {
         let family = family
             .parse::<ShellFamily>()
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+        let stance = interaction
+            .stance
+            .unwrap_or_else(|| Stance::default().to_string())
+            .parse::<Stance>()
+            .map_err(|error| ConfigError::Invalid(error.to_string()))?;
 
         Ok(Self {
             provider: ProviderConfig {
@@ -122,6 +141,7 @@ impl Config {
                 request_timeout_seconds: provider.request_timeout_seconds.unwrap_or(120),
             },
             shell: ShellConfig { family },
+            interaction: InteractionConfig { stance },
             transcript: TranscriptConfig {
                 directory: transcript.directory.unwrap_or_else(default_transcript_dir),
                 enabled: transcript.enabled.unwrap_or(true),
@@ -136,6 +156,10 @@ impl Config {
     pub fn apply_cli_overrides(&mut self, options: &CliOptions) -> Result<(), ConfigError> {
         if let Some(shell_family) = options.shell_family {
             self.shell.family = shell_family;
+        }
+
+        if let Some(stance) = options.stance {
+            self.interaction.stance = stance;
         }
 
         if let Some(transcript_enabled) = options.transcript_enabled {
@@ -303,6 +327,7 @@ mod tests {
             shell: Some(RawShellConfig {
                 family: Some("cmd".into()),
             }),
+            interaction: None,
             transcript: None,
             context: None,
         })
@@ -325,6 +350,9 @@ request_timeout_seconds = 45
 [shell]
 family = "posix"
 
+[interaction]
+stance = "audit"
+
 [transcript]
 enabled = false
 
@@ -342,6 +370,7 @@ max_estimated_tokens = 3000
         assert_eq!(config.provider.model, "local-model");
         assert_eq!(config.provider.request_timeout_seconds, 45);
         assert_eq!(config.shell.family, ShellFamily::Posix);
+        assert_eq!(config.interaction.stance, Stance::Audit);
         assert!(!config.transcript.enabled);
         assert_eq!(config.context.max_characters, Some(12000));
         assert_eq!(config.context.max_estimated_tokens, Some(3000));
@@ -386,6 +415,7 @@ max_estimated_tokens = 3000
         let tempdir = PathBuf::from("manual-transcripts");
         let options = CliOptions {
             shell_family: Some(ShellFamily::Posix),
+            stance: Some(Stance::Teach),
             transcript_enabled: Some(false),
             transcript_directory: Some(tempdir.clone()),
             ..CliOptions::default()
@@ -394,6 +424,7 @@ max_estimated_tokens = 3000
         config.apply_cli_overrides(&options).expect("overrides");
 
         assert_eq!(config.shell.family, ShellFamily::Posix);
+        assert_eq!(config.interaction.stance, Stance::Teach);
         assert!(!config.transcript.enabled);
         assert_eq!(config.transcript.directory, tempdir);
     }

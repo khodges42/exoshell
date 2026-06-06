@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::commands::{CommandSuggestion, parse_command_suggestions};
 use crate::config::Config;
 use crate::context::{
     ContextError, ContextPriority, ContextProviderRegistry, ContextProviderRequest,
     SessionContextStore, budget_warning, prune_context, register_default_context_providers,
-    render_context_details, render_context_list, render_context_stats, render_prompt_context,
+    render_context_details, render_context_list, render_context_stats,
 };
-use crate::prompts::phase1_system_prompt;
+use crate::prompts::{Stance, assemble_prompt, render_prompt_estimate};
 use crate::providers::{ChatMessage, ChatRequest, ChatResponse, ChatRole, Provider, ProviderError};
 use crate::repl::ReplError;
 use crate::shell::ShellFamily;
@@ -16,10 +17,11 @@ use crate::transcripts::{Transcript, TranscriptError};
 pub struct App {
     config: Config,
     provider: Box<dyn Provider>,
-    messages: Vec<ChatMessage>,
+    conversation: Vec<ChatMessage>,
     transcript: Transcript,
     context_store: SessionContextStore,
     context_registry: ContextProviderRegistry,
+    last_command_suggestions: Vec<CommandSuggestion>,
 }
 
 impl App {
@@ -28,11 +30,8 @@ impl App {
             "openai-compatible".into(),
             config.provider.model.clone(),
             config.shell.family,
+            config.interaction.stance,
         );
-        let messages = vec![ChatMessage::new(
-            ChatRole::System,
-            phase1_system_prompt(config.shell.family),
-        )];
         let mut context_registry = ContextProviderRegistry::new();
         register_default_context_providers(&mut context_registry)
             .expect("default context providers should register");
@@ -40,15 +39,16 @@ impl App {
         Self {
             config,
             provider,
-            messages,
+            conversation: Vec::new(),
             transcript,
             context_store: SessionContextStore::new(),
             context_registry,
+            last_command_suggestions: Vec::new(),
         }
     }
 
     pub async fn send(&mut self, input: String) -> Result<String, AppError> {
-        self.messages
+        self.conversation
             .push(ChatMessage::new(ChatRole::User, input.clone()));
         self.transcript.record_user(&input);
 
@@ -75,9 +75,13 @@ impl App {
                 return Err(error.into());
             }
         };
-        self.messages
+        self.conversation
             .push(ChatMessage::new(ChatRole::Assistant, response.clone()));
         self.transcript.record_assistant(&response);
+        self.last_command_suggestions = parse_command_suggestions(&response);
+        for suggestion in &self.last_command_suggestions {
+            self.transcript.record_command_suggestion(suggestion);
+        }
 
         Ok(response)
     }
@@ -88,11 +92,45 @@ impl App {
             return Ok(render_context_list(self.context_store.entries()));
         }
 
+        if trimmed == "/panel" {
+            return Ok(self.render_panel());
+        }
+
+        if trimmed == "/help" {
+            return Ok(help_overview().into());
+        }
+
+        if let Some(topic) = trimmed.strip_prefix("/help ") {
+            return Ok(help_topic(topic.trim()).into());
+        }
+
         if trimmed == "/context stats" {
+            let prompt_estimate = self.prompt_budget_estimate();
             return Ok(render_context_stats(
                 self.context_store.stats(),
                 self.config.context.budget(),
-            ));
+            ) + "\n\nPrompt estimate:\n"
+                + &render_prompt_estimate(prompt_estimate));
+        }
+
+        if trimmed == "/stance" {
+            return Ok(self.render_stance_status());
+        }
+
+        if let Some(stance) = trimmed.strip_prefix("/stance ") {
+            return self.set_stance(stance.trim());
+        }
+
+        if let Some(id) = trimmed.strip_prefix("/copy ") {
+            return self.copy_command(id.trim());
+        }
+
+        if let Some(id) = trimmed.strip_prefix("/explain ") {
+            return self.explain_command(id.trim());
+        }
+
+        if let Some(id) = trimmed.strip_prefix("/discard ") {
+            return self.discard_command(id.trim());
         }
 
         if let Some(id) = trimmed.strip_prefix("/context show ") {
@@ -249,24 +287,116 @@ impl App {
             return Err(ContextError::TooLarge(warning).into());
         }
 
-        let context = render_prompt_context(self.context_store.entries());
-        if context.is_empty() {
-            return Ok(self.messages.clone());
-        }
+        Ok(assemble_prompt(
+            self.config.shell.family,
+            self.config.interaction.stance,
+            &self.conversation,
+            self.context_store.entries(),
+            budget,
+        )
+        .messages)
+    }
 
-        let mut messages = self.messages.clone();
-        let insert_at = messages.len().saturating_sub(1);
-        messages.insert(
-            insert_at,
-            ChatMessage::new(
-                ChatRole::User,
-                format!(
-                    "Explicit session context selected by the operator follows.\n\n{}",
-                    context
-                ),
-            ),
+    fn prompt_budget_estimate(&self) -> crate::prompts::PromptBudgetEstimate {
+        assemble_prompt(
+            self.config.shell.family,
+            self.config.interaction.stance,
+            &self.conversation,
+            self.context_store.entries(),
+            self.config.context.budget(),
+        )
+        .estimate
+    }
+
+    pub fn stance(&self) -> Stance {
+        self.config.interaction.stance
+    }
+
+    fn render_stance_status(&self) -> String {
+        format!(
+            "current stance: {}\navailable stances: {}",
+            self.config.interaction.stance,
+            Stance::names()
+        )
+    }
+
+    fn render_panel(&self) -> String {
+        format!(
+            "Exoshell session\nstance: {}\nshell: {}\nprovider: openai-compatible\nmodel: {}\ntranscript: {}\n\nContext\n{}\n\nPrompt estimate\n{}",
+            self.config.interaction.stance,
+            self.config.shell.family,
+            self.config.provider.model,
+            if self.config.transcript.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            render_context_list(self.context_store.entries()),
+            render_prompt_estimate(self.prompt_budget_estimate())
+        )
+    }
+
+    fn set_stance(&mut self, input: &str) -> Result<String, AppError> {
+        let stance = input
+            .parse::<Stance>()
+            .map_err(|error| crate::config::ConfigError::Invalid(error.to_string()))?;
+        let previous = self.config.interaction.stance;
+        self.config.interaction.stance = stance;
+        self.transcript.record_stance_change(previous, stance);
+        Ok(format!("stance: {stance}"))
+    }
+
+    fn copy_command(&mut self, id: &str) -> Result<String, AppError> {
+        let command = self.command_suggestion(id)?.command.clone();
+        self.transcript.record_command_action(
+            id,
+            "copy",
+            "printed command; clipboard support unavailable",
         );
-        Ok(messages)
+        Ok(format!("clipboard unavailable; command {id}:\n{}", command))
+    }
+
+    fn explain_command(&mut self, id: &str) -> Result<String, AppError> {
+        let suggestion = self.command_suggestion(id)?.clone();
+        let mut explanation = format!(
+            "{} is a {} command suggestion.\n\nCommand:\n{}\n\n",
+            suggestion.id, suggestion.shell, suggestion.command
+        );
+        if let Some(summary) = &suggestion.explanation {
+            explanation.push_str(&format!("Model note: {summary}\n"));
+        }
+        if let Some(warning) = suggestion.detected_risk.warning() {
+            explanation.push_str(&format!("{warning}\n"));
+        } else {
+            explanation.push_str("No obvious destructive pattern was detected. Review before running.\n");
+        }
+        self.transcript
+            .record_command_action(id, "explain", "operator requested explanation");
+        Ok(explanation.trim_end().to_string())
+    }
+
+    fn discard_command(&mut self, id: &str) -> Result<String, AppError> {
+        {
+            let suggestion = self.command_suggestion_mut(id)?;
+            suggestion.discarded = true;
+        }
+        self.transcript
+            .record_command_action(id, "discard", "operator discarded suggestion");
+        Ok(format!("{id} discarded"))
+    }
+
+    fn command_suggestion(&self, id: &str) -> Result<&CommandSuggestion, AppError> {
+        self.last_command_suggestions
+            .iter()
+            .find(|suggestion| suggestion.id == id)
+            .ok_or_else(|| ContextError::NotFound(format!("command suggestion '{id}'")).into())
+    }
+
+    fn command_suggestion_mut(&mut self, id: &str) -> Result<&mut CommandSuggestion, AppError> {
+        self.last_command_suggestions
+            .iter_mut()
+            .find(|suggestion| suggestion.id == id)
+            .ok_or_else(|| ContextError::NotFound(format!("command suggestion '{id}'")).into())
     }
 
     fn add_context(
@@ -365,10 +495,49 @@ fn parse_context_priority_args(input: &str) -> Result<(&str, ContextPriority), C
     Ok((id, priority))
 }
 
+fn help_overview() -> &'static str {
+    "Commands:
+/context                       list attached context
+/context stats                 show context and prompt budget estimates
+/context show <id>             inspect a context entry
+/context enable|disable <id>   control model inclusion
+/context pin|unpin <id>        control pruning preference
+/context priority <id> <value> set low, normal, high, or critical priority
+/add-note <text>               attach manual context
+/add-file <path>               attach a UTF-8 file
+/add-dir <path>                attach a shallow directory summary
+/add-output                    paste command output as explicit context
+/stance [name]                 show or set operator, audit, teach, or quiet
+/copy <cmd-id>                 print a suggested command; does not execute it
+/explain <cmd-id>              explain a suggested command
+/discard <cmd-id>              mark a suggested command as discarded
+/panel                         show session, stance, provider, and context state
+/multi                         enter multi-line input
+/exit                          quit and write transcript if enabled
+
+Exoshell suggests commands. It does not execute them."
+}
+
+fn help_topic(topic: &str) -> &'static str {
+    match topic {
+        "context" => {
+            "Context is explicit and session-scoped. Use /add-note, /add-file, /add-dir, or /add-output to attach material. Use /context stats before requests to inspect attached context size and prompt estimates."
+        }
+        "stance" => {
+            "Stances change the compact prompt fragment used for the next request: operator is concise and action-oriented, audit focuses on risks, teach explains more, and quiet minimizes prose while keeping safety warnings."
+        }
+        "commands" => {
+            "Suggested commands appear as fenced shell blocks and get IDs such as cmd-001. Use /copy, /explain, or /discard by ID. Copy prints the command when clipboard support is unavailable and never runs it."
+        }
+        _ => "Unknown help topic. Try /help context, /help stance, or /help commands.",
+    }
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct CliOptions {
     pub config_path: Option<PathBuf>,
     pub shell_family: Option<ShellFamily>,
+    pub stance: Option<Stance>,
     pub transcript_enabled: Option<bool>,
     pub transcript_directory: Option<PathBuf>,
     pub context_notes: Vec<String>,
@@ -403,6 +572,15 @@ impl CliOptions {
                             crate::config::ConfigError::Invalid(error.to_string())
                         },
                     )?);
+                }
+                "--stance" => {
+                    let value = args.next().ok_or_else(|| {
+                        crate::config::ConfigError::Invalid("--stance requires a value".into())
+                    })?;
+                    options.stance =
+                        Some(value.parse().map_err(|error: crate::prompts::StanceError| {
+                            crate::config::ConfigError::Invalid(error.to_string())
+                        })?);
                 }
                 "--no-transcript" => options.transcript_enabled = Some(false),
                 "--transcript-dir" => {
@@ -440,14 +618,14 @@ impl CliOptions {
     }
 
     pub fn help() -> &'static str {
-        "Usage: exoshell [--config <path>] [--shell powershell|posix] [--context-note <text>] [--context-file <path>] [--no-transcript] [--transcript-dir <path>] [--no-color]\n\nStarts the Exoshell interactive model chat. Exoshell suggests commands; it does not execute them."
+        "Usage: exoshell [--config <path>] [--shell powershell|posix] [--stance operator|audit|teach|quiet] [--context-note <text>] [--context-file <path>] [--no-transcript] [--transcript-dir <path>] [--no-color]\n\nStarts the Exoshell interactive model chat. Exoshell suggests commands; it does not execute them."
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ProviderConfig, ShellConfig, TranscriptConfig};
+    use crate::config::{InteractionConfig, ProviderConfig, ShellConfig, TranscriptConfig};
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -470,6 +648,8 @@ mod tests {
         let options = CliOptions::parse([
             "--shell".to_string(),
             "posix".to_string(),
+            "--stance".to_string(),
+            "audit".to_string(),
             "--no-transcript".to_string(),
             "--transcript-dir".to_string(),
             "out".to_string(),
@@ -482,6 +662,7 @@ mod tests {
         .expect("options parse");
 
         assert_eq!(options.shell_family, Some(ShellFamily::Posix));
+        assert_eq!(options.stance, Some(Stance::Audit));
         assert_eq!(options.transcript_enabled, Some(true));
         assert_eq!(options.transcript_directory, Some(PathBuf::from("out")));
         assert_eq!(options.context_notes, vec!["note".to_string()]);
@@ -551,11 +732,34 @@ mod tests {
                 .expect("stats")
                 .contains("total_entries: 1")
         );
+        assert!(
+            app.handle_command("/context stats")
+                .expect("stats")
+                .contains("Prompt estimate:")
+        );
         assert_eq!(
             app.handle_command("/context remove ctx-001")
                 .expect("remove"),
             "removed ctx-001"
         );
+    }
+
+    #[test]
+    fn stance_command_shows_and_changes_current_stance() {
+        let mut app = App::new(test_config(), Box::new(NoopProvider));
+
+        assert_eq!(app.stance(), Stance::Operator);
+        assert!(
+            app.handle_command("/stance")
+                .expect("stance")
+                .contains("operator, audit, teach, quiet")
+        );
+        assert_eq!(
+            app.handle_command("/stance audit").expect("set stance"),
+            "stance: audit"
+        );
+        assert_eq!(app.stance(), Stance::Audit);
+        assert!(app.handle_command("/stance unknown").is_err());
     }
 
     #[tokio::test]
@@ -600,6 +804,52 @@ mod tests {
             !messages
                 .iter()
                 .any(|message| message.content.contains("hidden context"))
+        );
+    }
+
+    #[tokio::test]
+    async fn command_suggestion_actions_use_last_response_ids() {
+        let mut app = App::new(
+            test_config(),
+            Box::new(StaticProvider {
+                response: "Inspect:\n```powershell\nGet-ChildItem\n```".into(),
+            }),
+        );
+
+        app.send("suggest a command".into()).await.expect("send");
+
+        assert!(
+            app.handle_command("/copy cmd-001")
+                .expect("copy")
+                .contains("Get-ChildItem")
+        );
+        assert!(
+            app.handle_command("/explain cmd-001")
+                .expect("explain")
+                .contains("powershell")
+        );
+        assert_eq!(
+            app.handle_command("/discard cmd-001").expect("discard"),
+            "cmd-001 discarded"
+        );
+        assert!(app.handle_command("/copy cmd-999").is_err());
+    }
+
+    #[test]
+    fn panel_and_help_render_phase2_controls() {
+        let mut app = App::new(test_config(), Box::new(NoopProvider));
+        app.handle_command("/add-note repo uses cargo")
+            .expect("add note");
+
+        assert!(
+            app.handle_command("/panel")
+                .expect("panel")
+                .contains("stance: operator")
+        );
+        assert!(
+            app.handle_command("/help commands")
+                .expect("help")
+                .contains("/copy")
         );
     }
 
@@ -681,6 +931,17 @@ mod tests {
         }
     }
 
+    struct StaticProvider {
+        response: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for StaticProvider {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, ProviderError> {
+            Ok(ChatResponse::Complete(self.response.clone()))
+        }
+    }
+
     fn test_config() -> Config {
         Config {
             provider: ProviderConfig {
@@ -692,6 +953,9 @@ mod tests {
             },
             shell: ShellConfig {
                 family: ShellFamily::PowerShell,
+            },
+            interaction: InteractionConfig {
+                stance: Stance::Operator,
             },
             transcript: TranscriptConfig {
                 directory: PathBuf::from("transcripts"),

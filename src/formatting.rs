@@ -1,3 +1,5 @@
+use crate::commands::{parse_command_suggestions, render_suggestions};
+
 pub fn render_assistant_output(response: &str) -> String {
     let mut rendered = String::new();
     let mut in_command_block = false;
@@ -22,6 +24,12 @@ pub fn render_assistant_output(response: &str) -> String {
         }
 
         rendered.push_str(line);
+        rendered.push('\n');
+    }
+
+    let suggestions = parse_command_suggestions(response);
+    if !suggestions.is_empty() {
+        rendered.push_str(&render_suggestions(&suggestions));
         rendered.push('\n');
     }
 

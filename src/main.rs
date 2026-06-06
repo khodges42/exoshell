@@ -1,4 +1,5 @@
 mod app;
+mod commands;
 mod config;
 pub mod context;
 mod formatting;

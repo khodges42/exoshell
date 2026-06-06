@@ -13,9 +13,10 @@ impl Repl {
     }
 
     pub async fn run(mut self) -> Result<(), AppError> {
-        println!("Exoshell Phase 1");
+        println!("Exoshell Phase 2");
+        println!("stance: {}", self.app.stance());
         println!(
-            "Type /exit to quit. Type /multi to enter multi-line input, then finish with a single '.' line."
+            "Type /exit to quit. Type /stance to inspect or change stance. Type /multi to enter multi-line input, then finish with a single '.' line."
         );
 
         loop {
@@ -45,6 +46,12 @@ impl Repl {
             }
 
             if input.starts_with("/context")
+                || input.starts_with("/stance")
+                || input.starts_with("/copy ")
+                || input.starts_with("/explain ")
+                || input.starts_with("/discard ")
+                || input.starts_with("/help")
+                || input == "/panel"
                 || input.starts_with("/add-note ")
                 || input.starts_with("/add-file ")
                 || input.starts_with("/add-dir ")

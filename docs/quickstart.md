@@ -54,6 +54,34 @@ stance = "operator"
 
 Local provider URLs such as `localhost` and `127.0.0.1` do not require an API key.
 
+## Configure Command Risk Rules
+
+Exoshell ships with conservative default rules for obvious risky command suggestions. You can add your own rules at runtime:
+
+```toml
+[commands.risk]
+include_defaults = true
+
+[[commands.risk.rules]]
+match_all = ["kubectl delete", "--all"]
+reason = "cluster-wide deletion"
+shell = "posix"
+
+[[commands.risk.rules]]
+match_all = ["terraform apply"]
+reason = "infrastructure mutation"
+shell = "posix"
+```
+
+`match_all` is a list of case-insensitive substrings that must all appear in the suggested command. `shell` is optional; use `posix` or `powershell`.
+
+To replace the built-in defaults entirely:
+
+```toml
+[commands.risk]
+include_defaults = false
+```
+
 ## Start Exoshell
 
 Run with defaults:

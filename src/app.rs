@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::commands::{CommandSuggestion, parse_command_suggestions};
+use crate::commands::{CommandSuggestion, parse_command_suggestions_with_policy};
 use crate::config::Config;
 use crate::context::{
     ContextError, ContextPriority, ContextProviderRegistry, ContextProviderRequest,
     SessionContextStore, budget_warning, prune_context, register_default_context_providers,
     render_context_details, render_context_list, render_context_stats,
 };
+use crate::formatting::render_assistant_output_with_policy;
 use crate::prompts::{Stance, assemble_prompt, render_prompt_estimate};
 use crate::providers::{ChatMessage, ChatRequest, ChatResponse, ChatRole, Provider, ProviderError};
 use crate::repl::ReplError;
@@ -78,7 +79,8 @@ impl App {
         self.conversation
             .push(ChatMessage::new(ChatRole::Assistant, response.clone()));
         self.transcript.record_assistant(&response);
-        self.last_command_suggestions = parse_command_suggestions(&response);
+        self.last_command_suggestions =
+            parse_command_suggestions_with_policy(&response, &self.config.commands.risk);
         for suggestion in &self.last_command_suggestions {
             self.transcript.record_command_suggestion(suggestion);
         }
@@ -275,6 +277,10 @@ impl App {
             .transcript
             .write_to_dir(&self.config.transcript.directory)?;
         Ok(Some(path))
+    }
+
+    pub fn render_assistant_output(&self, response: &str) -> String {
+        render_assistant_output_with_policy(response, &self.config.commands.risk)
     }
 
     fn assembled_messages(&mut self) -> Result<Vec<ChatMessage>, AppError> {
@@ -627,7 +633,9 @@ impl CliOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{InteractionConfig, ProviderConfig, ShellConfig, TranscriptConfig};
+    use crate::config::{
+        CommandConfig, InteractionConfig, ProviderConfig, ShellConfig, TranscriptConfig,
+    };
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -958,6 +966,9 @@ mod tests {
             },
             interaction: InteractionConfig {
                 stance: Stance::Operator,
+            },
+            commands: CommandConfig {
+                risk: crate::commands::CommandRiskPolicy::default(),
             },
             transcript: TranscriptConfig {
                 directory: PathBuf::from("transcripts"),

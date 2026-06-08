@@ -1,7 +1,6 @@
 use std::io::{self, Write};
 
 use crate::app::{App, AppError};
-use crate::formatting::render_assistant_output;
 
 pub struct Repl {
     app: App,
@@ -75,7 +74,7 @@ impl Repl {
 
             println!("waiting for provider response...");
             match self.app.send(input).await {
-                Ok(response) => println!("\n{}\n", render_assistant_output(&response)),
+                Ok(response) => println!("\n{}\n", self.app.render_assistant_output(&response)),
                 Err(error) => eprintln!("request failed: {error}"),
             }
         }

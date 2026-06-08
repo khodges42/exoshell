@@ -1,6 +1,12 @@
-use crate::commands::{parse_command_suggestions, render_suggestions};
+use crate::commands::{
+    CommandRiskPolicy, parse_command_suggestions_with_policy, render_suggestions,
+};
 
 pub fn render_assistant_output(response: &str) -> String {
+    render_assistant_output_with_policy(response, &CommandRiskPolicy::default())
+}
+
+pub fn render_assistant_output_with_policy(response: &str, policy: &CommandRiskPolicy) -> String {
     let mut rendered = String::new();
     let mut in_command_block = false;
 
@@ -27,7 +33,7 @@ pub fn render_assistant_output(response: &str) -> String {
         rendered.push('\n');
     }
 
-    let suggestions = parse_command_suggestions(response);
+    let suggestions = parse_command_suggestions_with_policy(response, policy);
     if !suggestions.is_empty() {
         rendered.push_str(&render_suggestions(&suggestions));
         rendered.push('\n');

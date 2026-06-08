@@ -11,7 +11,8 @@ pub struct CommandSuggestion {
     pub discarded: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CommandShell {
     PowerShell,
     Posix,
@@ -24,6 +25,25 @@ impl fmt::Display for CommandShell {
             Self::PowerShell => formatter.write_str("powershell"),
             Self::Posix => formatter.write_str("posix"),
             Self::Unknown => formatter.write_str("unknown"),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CommandShellError {
+    #[error("unknown command shell '{0}', expected powershell, posix, or unknown")]
+    Unknown(String),
+}
+
+impl std::str::FromStr for CommandShell {
+    type Err = CommandShellError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "powershell" | "pwsh" => Ok(Self::PowerShell),
+            "posix" | "sh" | "bash" | "zsh" => Ok(Self::Posix),
+            "unknown" => Ok(Self::Unknown),
+            other => Err(CommandShellError::Unknown(other.to_string())),
         }
     }
 }
@@ -51,14 +71,82 @@ pub struct CommandRisk {
     pub reasons: Vec<String>,
 }
 
-impl CommandRisk {
-    pub fn none() -> Self {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandRiskPolicy {
+    pub include_defaults: bool,
+    pub rules: Vec<CommandRiskRule>,
+}
+
+impl CommandRiskPolicy {
+    pub fn evaluate(&self, command: &str, shell: CommandShell) -> CommandRisk {
+        let command = command.to_ascii_lowercase();
+        let mut reasons = Vec::new();
+
+        let default_rules;
+        let rules: Box<dyn Iterator<Item = &CommandRiskRule> + '_> = if self.include_defaults {
+            default_rules = default_command_risk_rules();
+            Box::new(default_rules.iter().chain(self.rules.iter()))
+        } else {
+            Box::new(self.rules.iter())
+        };
+
+        for rule in rules {
+            if rule.matches(&command, shell) && !reasons.contains(&rule.reason) {
+                reasons.push(rule.reason.clone());
+            }
+        }
+
+        CommandRisk {
+            level: if reasons.is_empty() {
+                RiskLevel::Low
+            } else {
+                RiskLevel::High
+            },
+            reasons,
+        }
+    }
+}
+
+impl Default for CommandRiskPolicy {
+    fn default() -> Self {
         Self {
-            level: RiskLevel::Low,
-            reasons: Vec::new(),
+            include_defaults: true,
+            rules: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CommandRiskRule {
+    pub match_all: Vec<String>,
+    pub reason: String,
+    #[serde(default)]
+    pub shell: Option<CommandShell>,
+}
+
+impl CommandRiskRule {
+    pub fn new(match_all: Vec<&str>, reason: &str, shell: Option<CommandShell>) -> Self {
+        Self {
+            match_all: match_all.into_iter().map(str::to_string).collect(),
+            reason: reason.to_string(),
+            shell,
         }
     }
 
+    pub fn matches(&self, command: &str, shell: CommandShell) -> bool {
+        if self.shell.is_some_and(|expected| expected != shell) {
+            return false;
+        }
+
+        !self.match_all.is_empty()
+            && self
+                .match_all
+                .iter()
+                .all(|pattern| command.contains(&pattern.to_ascii_lowercase()))
+    }
+}
+
+impl CommandRisk {
     pub fn warning(&self) -> Option<String> {
         if self.reasons.is_empty() {
             None
@@ -69,6 +157,13 @@ impl CommandRisk {
 }
 
 pub fn parse_command_suggestions(response: &str) -> Vec<CommandSuggestion> {
+    parse_command_suggestions_with_policy(response, &CommandRiskPolicy::default())
+}
+
+pub fn parse_command_suggestions_with_policy(
+    response: &str,
+    policy: &CommandRiskPolicy,
+) -> Vec<CommandSuggestion> {
     let mut suggestions = Vec::new();
     let mut lines = response.lines().peekable();
     let mut previous_text = Vec::new();
@@ -107,7 +202,7 @@ pub fn parse_command_suggestions(response: &str) -> Vec<CommandSuggestion> {
             .rev()
             .find(|line| !line.contains("risk:") && !line.contains("[risk:"))
             .cloned();
-        let detected_risk = detect_command_risk(&command, shell);
+        let detected_risk = detect_command_risk_with_policy(&command, shell, policy);
 
         suggestions.push(CommandSuggestion {
             id,
@@ -124,68 +219,15 @@ pub fn parse_command_suggestions(response: &str) -> Vec<CommandSuggestion> {
 }
 
 pub fn detect_command_risk(command: &str, shell: CommandShell) -> CommandRisk {
-    let lowered = command.to_ascii_lowercase();
-    let mut reasons = Vec::new();
+    detect_command_risk_with_policy(command, shell, &CommandRiskPolicy::default())
+}
 
-    if lowered.contains("rm -rf")
-        || lowered.contains("rm -fr")
-        || lowered.contains("remove-item")
-            && lowered.contains("-recurse")
-            && lowered.contains("-force")
-        || lowered.contains("del /s")
-    {
-        reasons.push("recursive or forced deletion".into());
-    }
-    if lowered.contains("format-volume")
-        || lowered.contains("format ")
-        || lowered.contains("mkfs")
-        || lowered.contains("diskpart")
-    {
-        reasons.push("disk formatting or partition operation".into());
-    }
-    if lowered.contains("chmod -r")
-        || lowered.contains("chown -r")
-        || lowered.contains("icacls ") && lowered.contains("/grant")
-    {
-        reasons.push("recursive permission change".into());
-    }
-    if lowered.contains("curl ") && lowered.contains("| sh")
-        || lowered.contains("wget ") && lowered.contains("| sh")
-        || lowered.contains("irm ") && lowered.contains("iex")
-        || lowered.contains("invoke-restmethod") && lowered.contains("invoke-expression")
-    {
-        reasons.push("downloaded content piped to an interpreter".into());
-    }
-    if lowered.contains("api_key")
-        || lowered.contains("apikey")
-        || lowered.contains("password")
-        || lowered.contains("secret")
-        || lowered.contains("token")
-    {
-        reasons.push("possible credential exposure".into());
-    }
-    if lowered.contains("apt remove")
-        || lowered.contains("apt purge")
-        || lowered.contains("dnf remove")
-        || lowered.contains("yum remove")
-        || lowered.contains("pacman -r")
-        || lowered.contains("uninstall-package")
-    {
-        reasons.push("package removal".into());
-    }
-
-    if shell == CommandShell::PowerShell && lowered.contains("set-executionpolicy") {
-        reasons.push("PowerShell execution policy change".into());
-    }
-
-    CommandRisk {
-        level: if reasons.is_empty() {
-            RiskLevel::Low
-        } else {
-            RiskLevel::High
-        },
-        reasons,
-    }
+pub fn detect_command_risk_with_policy(
+    command: &str,
+    shell: CommandShell,
+    policy: &CommandRiskPolicy,
+) -> CommandRisk {
+    policy.evaluate(command, shell)
 }
 
 pub fn render_suggestions(suggestions: &[CommandSuggestion]) -> String {
@@ -241,6 +283,122 @@ fn parse_risk_marker(line: &str) -> Option<RiskLevel> {
     }
 }
 
+fn default_command_risk_rules() -> Vec<CommandRiskRule> {
+    vec![
+        CommandRiskRule::new(
+            vec!["rm -rf"],
+            "recursive or forced deletion",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["rm -fr"],
+            "recursive or forced deletion",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["remove-item", "-recurse", "-force"],
+            "recursive or forced deletion",
+            Some(CommandShell::PowerShell),
+        ),
+        CommandRiskRule::new(vec!["del /s"], "recursive or forced deletion", None),
+        CommandRiskRule::new(
+            vec!["format-volume"],
+            "disk formatting or partition operation",
+            Some(CommandShell::PowerShell),
+        ),
+        CommandRiskRule::new(
+            vec!["format "],
+            "disk formatting or partition operation",
+            None,
+        ),
+        CommandRiskRule::new(
+            vec!["mkfs"],
+            "disk formatting or partition operation",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["diskpart"],
+            "disk formatting or partition operation",
+            None,
+        ),
+        CommandRiskRule::new(
+            vec!["chmod -r"],
+            "recursive permission change",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["chown -r"],
+            "recursive permission change",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["icacls ", "/grant"],
+            "recursive permission change",
+            Some(CommandShell::PowerShell),
+        ),
+        CommandRiskRule::new(
+            vec!["curl ", "| sh"],
+            "downloaded content piped to an interpreter",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["wget ", "| sh"],
+            "downloaded content piped to an interpreter",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["irm ", "iex"],
+            "downloaded content piped to an interpreter",
+            Some(CommandShell::PowerShell),
+        ),
+        CommandRiskRule::new(
+            vec!["invoke-restmethod", "invoke-expression"],
+            "downloaded content piped to an interpreter",
+            Some(CommandShell::PowerShell),
+        ),
+        CommandRiskRule::new(vec!["api_key"], "possible credential exposure", None),
+        CommandRiskRule::new(vec!["apikey"], "possible credential exposure", None),
+        CommandRiskRule::new(vec!["password"], "possible credential exposure", None),
+        CommandRiskRule::new(vec!["secret"], "possible credential exposure", None),
+        CommandRiskRule::new(vec!["token"], "possible credential exposure", None),
+        CommandRiskRule::new(
+            vec!["apt remove"],
+            "package removal",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["apt purge"],
+            "package removal",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["dnf remove"],
+            "package removal",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["yum remove"],
+            "package removal",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["pacman -r"],
+            "package removal",
+            Some(CommandShell::Posix),
+        ),
+        CommandRiskRule::new(
+            vec!["uninstall-package"],
+            "package removal",
+            Some(CommandShell::PowerShell),
+        ),
+        CommandRiskRule::new(
+            vec!["set-executionpolicy"],
+            "PowerShell execution policy change",
+            Some(CommandShell::PowerShell),
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +441,63 @@ mod tests {
         assert_eq!(
             detect_command_risk("rg TODO", CommandShell::Posix).level,
             RiskLevel::Low
+        );
+    }
+
+    #[test]
+    fn custom_policy_rules_extend_defaults() {
+        let policy = CommandRiskPolicy {
+            include_defaults: true,
+            rules: vec![CommandRiskRule::new(
+                vec!["kubectl delete", "--all"],
+                "cluster-wide deletion",
+                Some(CommandShell::Posix),
+            )],
+        };
+
+        let risk = detect_command_risk_with_policy(
+            "kubectl delete pods --all",
+            CommandShell::Posix,
+            &policy,
+        );
+
+        assert_eq!(risk.level, RiskLevel::High);
+        assert_eq!(risk.reasons, vec!["cluster-wide deletion".to_string()]);
+    }
+
+    #[test]
+    fn custom_policy_can_disable_defaults() {
+        let policy = CommandRiskPolicy {
+            include_defaults: false,
+            rules: Vec::new(),
+        };
+
+        let risk = detect_command_risk_with_policy("rm -rf build", CommandShell::Posix, &policy);
+
+        assert_eq!(risk.level, RiskLevel::Low);
+        assert!(risk.reasons.is_empty());
+    }
+
+    #[test]
+    fn parser_uses_supplied_policy() {
+        let policy = CommandRiskPolicy {
+            include_defaults: false,
+            rules: vec![CommandRiskRule::new(
+                vec!["terraform apply"],
+                "infrastructure mutation",
+                Some(CommandShell::Posix),
+            )],
+        };
+
+        let suggestions = parse_command_suggestions_with_policy(
+            "Apply infra:\n```sh\nterraform apply\n```",
+            &policy,
+        );
+
+        assert_eq!(suggestions[0].detected_risk.level, RiskLevel::High);
+        assert_eq!(
+            suggestions[0].detected_risk.reasons,
+            vec!["infrastructure mutation".to_string()]
         );
     }
 }

@@ -89,7 +89,21 @@ Available actions:
 
 ## Risk Detection
 
-Phase 2 includes a simple non-blocking detector for obvious risky commands. It flags patterns such as recursive forced deletion, disk formatting, recursive permission changes, downloaded content piped to an interpreter, credential exposure, and package removal.
+Phase 2 includes a simple non-blocking detector for obvious risky commands. The detector is policy-driven: Exoshell ships with conservative defaults, and users can add or replace rules at runtime through config.
+
+Default rules flag patterns such as recursive forced deletion, disk formatting, recursive permission changes, downloaded content piped to an interpreter, credential exposure, and package removal.
+
+Example custom rule:
+
+```toml
+[commands.risk]
+include_defaults = true
+
+[[commands.risk.rules]]
+match_all = ["kubectl delete", "--all"]
+reason = "cluster-wide deletion"
+shell = "posix"
+```
 
 False positives are acceptable. A warning means "review this carefully," not "this command is definitely harmful." Lack of a warning does not mean a command is safe.
 

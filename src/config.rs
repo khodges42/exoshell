@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::app::CliOptions;
+use crate::commands::{CommandRiskPolicy, CommandRiskRule};
 use crate::context::ContextBudget;
 use crate::prompts::Stance;
 use crate::shell::ShellFamily;
@@ -14,6 +15,7 @@ pub struct Config {
     pub provider: ProviderConfig,
     pub shell: ShellConfig,
     pub interaction: InteractionConfig,
+    pub commands: CommandConfig,
     pub transcript: TranscriptConfig,
     pub context: ContextConfig,
 }
@@ -35,6 +37,11 @@ pub struct ShellConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractionConfig {
     pub stance: Stance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandConfig {
+    pub risk: CommandRiskPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +70,7 @@ struct RawConfig {
     provider: Option<RawProviderConfig>,
     shell: Option<RawShellConfig>,
     interaction: Option<RawInteractionConfig>,
+    commands: Option<RawCommandConfig>,
     transcript: Option<RawTranscriptConfig>,
     context: Option<RawContextConfig>,
 }
@@ -83,6 +91,17 @@ struct RawShellConfig {
 #[derive(Debug, Deserialize, Default)]
 struct RawInteractionConfig {
     stance: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawCommandConfig {
+    risk: Option<RawCommandRiskConfig>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawCommandRiskConfig {
+    include_defaults: Option<bool>,
+    rules: Option<Vec<CommandRiskRule>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -111,6 +130,7 @@ impl Config {
         let provider = raw.provider.unwrap_or_default();
         let shell = raw.shell.unwrap_or_default();
         let interaction = raw.interaction.unwrap_or_default();
+        let commands = raw.commands.unwrap_or_default();
         let transcript = raw.transcript.unwrap_or_default();
         let context = raw.context.unwrap_or_default();
 
@@ -131,6 +151,7 @@ impl Config {
             .unwrap_or_else(|| Stance::default().to_string())
             .parse::<Stance>()
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+        let risk = command_risk_policy(commands.risk)?;
 
         Ok(Self {
             provider: ProviderConfig {
@@ -142,6 +163,7 @@ impl Config {
             },
             shell: ShellConfig { family },
             interaction: InteractionConfig { stance },
+            commands: CommandConfig { risk },
             transcript: TranscriptConfig {
                 directory: transcript.directory.unwrap_or_else(default_transcript_dir),
                 enabled: transcript.enabled.unwrap_or(true),
@@ -172,6 +194,42 @@ impl Config {
 
         Ok(())
     }
+}
+
+fn command_risk_policy(
+    raw: Option<RawCommandRiskConfig>,
+) -> Result<CommandRiskPolicy, ConfigError> {
+    let Some(raw) = raw else {
+        return Ok(CommandRiskPolicy::default());
+    };
+
+    let rules = raw.rules.unwrap_or_default();
+    for rule in &rules {
+        if rule.match_all.is_empty() {
+            return Err(ConfigError::Invalid(
+                "commands.risk.rules entries require at least one match_all pattern".into(),
+            ));
+        }
+        if rule
+            .match_all
+            .iter()
+            .any(|pattern| pattern.trim().is_empty())
+        {
+            return Err(ConfigError::Invalid(
+                "commands.risk.rules match_all patterns cannot be empty".into(),
+            ));
+        }
+        if rule.reason.trim().is_empty() {
+            return Err(ConfigError::Invalid(
+                "commands.risk.rules reason cannot be empty".into(),
+            ));
+        }
+    }
+
+    Ok(CommandRiskPolicy {
+        include_defaults: raw.include_defaults.unwrap_or(true),
+        rules,
+    })
 }
 
 impl RawConfig {
@@ -328,6 +386,7 @@ mod tests {
                 family: Some("cmd".into()),
             }),
             interaction: None,
+            commands: None,
             transcript: None,
             context: None,
         })
@@ -353,6 +412,14 @@ family = "posix"
 [interaction]
 stance = "audit"
 
+[commands.risk]
+include_defaults = true
+
+[[commands.risk.rules]]
+match_all = ["kubectl delete", "--all"]
+reason = "cluster-wide deletion"
+shell = "posix"
+
 [transcript]
 enabled = false
 
@@ -371,6 +438,12 @@ max_estimated_tokens = 3000
         assert_eq!(config.provider.request_timeout_seconds, 45);
         assert_eq!(config.shell.family, ShellFamily::Posix);
         assert_eq!(config.interaction.stance, Stance::Audit);
+        assert!(config.commands.risk.include_defaults);
+        assert_eq!(config.commands.risk.rules.len(), 1);
+        assert_eq!(
+            config.commands.risk.rules[0].reason,
+            "cluster-wide deletion"
+        );
         assert!(!config.transcript.enabled);
         assert_eq!(config.context.max_characters, Some(12000));
         assert_eq!(config.context.max_estimated_tokens, Some(3000));
@@ -395,6 +468,29 @@ max_estimated_tokens = 3000
         assert_eq!(config.context.max_characters, None);
         assert_eq!(config.context.max_estimated_tokens, None);
         assert_eq!(config.provider.request_timeout_seconds, 120);
+        assert!(config.commands.risk.include_defaults);
+        assert!(config.commands.risk.rules.is_empty());
+    }
+
+    #[test]
+    fn command_risk_defaults_can_be_disabled() {
+        let mut file = tempfile::NamedTempFile::new().expect("temp config");
+        write!(
+            file,
+            r#"
+[provider]
+base_url = "http://localhost:11434/v1"
+
+[commands.risk]
+include_defaults = false
+"#
+        )
+        .expect("write config");
+
+        let config = Config::load(Some(file.path())).expect("config loads");
+
+        assert!(!config.commands.risk.include_defaults);
+        assert!(config.commands.risk.rules.is_empty());
     }
 
     #[test]

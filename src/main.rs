@@ -3,6 +3,7 @@ mod commands;
 mod config;
 pub mod context;
 mod formatting;
+mod keybindings;
 mod prompts;
 mod providers;
 mod repl;
@@ -14,6 +15,7 @@ use std::io::{IsTerminal, Read};
 use crate::app::{App, CliOptions};
 use crate::config::Config;
 use crate::providers::openai_compatible::OpenAiCompatibleProvider;
+use crate::providers::router::ModelRouterProvider;
 use crate::repl::Repl;
 
 #[tokio::main]
@@ -34,8 +36,16 @@ async fn run() -> Result<(), app::AppError> {
 
     let mut config = Config::load(options.config_path.as_deref())?;
     config.apply_cli_overrides(&options)?;
-    let provider = OpenAiCompatibleProvider::from_config(&config)?;
-    let mut app = App::new(config, Box::new(provider));
+    let base_provider = OpenAiCompatibleProvider::from_config(&config)?;
+    let provider: Box<dyn crate::providers::Provider> = if config.router.enabled {
+        Box::new(ModelRouterProvider::new(
+            base_provider,
+            config.router.clone(),
+        )?)
+    } else {
+        Box::new(base_provider)
+    };
+    let mut app = App::new(config, provider);
 
     for note in options.context_notes {
         println!("{}", app.add_note_context(note)?);

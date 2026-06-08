@@ -1,4 +1,5 @@
 pub mod openai_compatible;
+pub mod router;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChatMessage {
@@ -35,9 +36,20 @@ pub enum ChatResponse {
     Stream(Vec<String>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRoute {
+    pub role: String,
+    pub model: String,
+    pub reason: String,
+}
+
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError>;
+
+    fn last_model_route(&self) -> Option<ModelRoute> {
+        None
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

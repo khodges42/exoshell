@@ -50,6 +50,7 @@ impl Repl {
                 || input.starts_with("/explain ")
                 || input.starts_with("/discard ")
                 || input.starts_with("/help")
+                || input == "/keys"
                 || input == "/panel"
                 || input.starts_with("/add-note ")
                 || input.starts_with("/add-file ")

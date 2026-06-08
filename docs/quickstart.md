@@ -82,6 +82,60 @@ To replace the built-in defaults entirely:
 include_defaults = false
 ```
 
+## Configure Model Routing
+
+Exoshell can route each prompt through a fast router model before selecting the model that should answer.
+
+Enable the default router:
+
+```toml
+[router]
+enabled = true
+model = "qwen2.5-coder:7b"
+fallback_role = "coding"
+```
+
+Default roles:
+
+```text
+instant          qwen2.5-coder:7b
+coding           coder-g4-26b
+heavy            coder-g4-26b
+conversational   qwen2.5-coder:7b
+```
+
+Override role models or behavior:
+
+```toml
+[router]
+enabled = true
+model = "qwen2.5-coder:7b"
+fallback_role = "coding"
+behavior = "Prefer instant for short shell questions. Use heavy only for architecture or high-context analysis."
+
+[[router.roles]]
+name = "instant"
+model = "qwen2.5-coder:7b"
+description = "fast responses for simple prompts"
+
+[[router.roles]]
+name = "coding"
+model = "coder-g4-26b"
+description = "code edits, debugging, tests, and shell command construction"
+
+[[router.roles]]
+name = "heavy"
+model = "coder-g4-26b"
+description = "complex reasoning and architecture"
+
+[[router.roles]]
+name = "conversational"
+model = "qwen2.5-coder:7b"
+description = "general discussion and explanations"
+```
+
+For Ollama model setup examples, see [khodges42/modelfiles](https://github.com/khodges42/modelfiles).
+
 ## Start Exoshell
 
 Run with defaults:
@@ -245,6 +299,16 @@ exo> /panel
 ```
 
 The panel includes stance, shell family, provider/model, transcript state, context entries, and prompt estimates.
+
+## Keybinding Fallbacks
+
+The current REPL is line-oriented. Use `/keys` to show the available key actions and their slash-command fallbacks:
+
+```text
+exo> /keys
+```
+
+Copy, explain, discard, context, and stance actions degrade to explicit commands such as `/copy <cmd-id>`, `/explain <cmd-id>`, `/discard <cmd-id>`, `/context`, and `/stance`.
 
 ## Multi-Line Prompts
 

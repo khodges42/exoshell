@@ -18,6 +18,8 @@ Command suggestion is a shell fenced code block such as `powershell`, `pwsh`, `s
 
 Transcript entry is a markdown record of user prompts, assistant responses, context events, budget warnings, stance changes, command suggestions, and command actions.
 
+Model route is an optional provider decision made before a request is answered. When model routing is enabled, a fast router model chooses one configured role. The selected role, target model, and reason are recorded in the transcript.
+
 ## Prompt Assembly
 
 Prompt assembly is deterministic:
@@ -113,15 +115,19 @@ Useful commands:
 
 ```text
 /panel
+/keys
 /context
 /context stats
 /help
+/help keys
 /help context
 /help stance
 /help commands
 ```
 
 `/panel` renders stance, shell family, provider/model, transcript state, context entries, and prompt estimates without requiring a TUI.
+
+`/keys` documents the current line-REPL key actions and slash-command fallbacks. Advanced terminal key handling is not active yet; copy, explain, discard, context, and stance controls degrade to explicit slash commands.
 
 ## Non-Goals
 
@@ -141,4 +147,34 @@ Command parsing is intentionally simple and based on fenced blocks.
 
 Risk detection is heuristic and incomplete.
 
-Advanced TUI keybindings and config profiles remain planned work.
+Advanced full-screen TUI keybindings and config profiles remain planned work.
+
+## Model Routing
+
+The configurable model router lets a fast model inspect the prompt payload and choose the model role that should answer.
+
+Default roles:
+
+```text
+instant          qwen2.5-coder:7b
+coding           coder-g4-26b
+heavy            coder-g4-26b
+conversational   qwen2.5-coder:7b
+```
+
+Enable routing:
+
+```toml
+[router]
+enabled = true
+model = "qwen2.5-coder:7b"
+fallback_role = "coding"
+```
+
+The router asks for compact JSON:
+
+```json
+{"role":"coding","reason":"source code change request"}
+```
+
+If the router fails or returns an unknown role, Exoshell uses the configured fallback role and records that reason in the transcript.

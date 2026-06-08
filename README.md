@@ -63,6 +63,17 @@ Select an operating stance:
 cargo run -- --stance audit
 ```
 
+Configure model routing:
+
+```toml
+[router]
+enabled = true
+model = "qwen2.5-coder:7b"
+fallback_role = "coding"
+```
+
+The default router roles are `instant`, `coding`, `heavy`, and `conversational`. For Ollama model setup examples, see [khodges42/modelfiles](https://github.com/khodges42/modelfiles).
+
 Exoshell suggests commands. It does not execute them.
 
 ## Quality Checks

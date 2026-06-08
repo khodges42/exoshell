@@ -2,7 +2,8 @@ use crate::commands::{
     CommandRiskPolicy, parse_command_suggestions_with_policy, render_suggestions,
 };
 
-pub fn render_assistant_output(response: &str) -> String {
+#[cfg(test)]
+fn render_assistant_output(response: &str) -> String {
     render_assistant_output_with_policy(response, &CommandRiskPolicy::default())
 }
 

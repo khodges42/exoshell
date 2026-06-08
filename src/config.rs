@@ -8,11 +8,13 @@ use crate::app::CliOptions;
 use crate::commands::{CommandRiskPolicy, CommandRiskRule};
 use crate::context::ContextBudget;
 use crate::prompts::Stance;
+use crate::providers::router::{ModelRouterConfig, ModelRouterRole};
 use crate::shell::ShellFamily;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub provider: ProviderConfig,
+    pub router: ModelRouterConfig,
     pub shell: ShellConfig,
     pub interaction: InteractionConfig,
     pub commands: CommandConfig,
@@ -68,6 +70,7 @@ impl ContextConfig {
 #[derive(Debug, Deserialize, Default)]
 struct RawConfig {
     provider: Option<RawProviderConfig>,
+    router: Option<RawModelRouterConfig>,
     shell: Option<RawShellConfig>,
     interaction: Option<RawInteractionConfig>,
     commands: Option<RawCommandConfig>,
@@ -81,6 +84,22 @@ struct RawProviderConfig {
     api_key_env: Option<String>,
     model: Option<String>,
     request_timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawModelRouterConfig {
+    enabled: Option<bool>,
+    model: Option<String>,
+    fallback_role: Option<String>,
+    behavior: Option<String>,
+    roles: Option<Vec<RawModelRouterRole>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawModelRouterRole {
+    name: Option<String>,
+    model: Option<String>,
+    description: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -128,6 +147,7 @@ impl Config {
 
     fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
         let provider = raw.provider.unwrap_or_default();
+        let router = raw.router.unwrap_or_default();
         let shell = raw.shell.unwrap_or_default();
         let interaction = raw.interaction.unwrap_or_default();
         let commands = raw.commands.unwrap_or_default();
@@ -141,6 +161,7 @@ impl Config {
             .api_key_env
             .unwrap_or_else(|| "OPENAI_API_KEY".into());
         let api_key = provider_api_key(&base_url, &api_key_env)?;
+        let router = model_router_config(router)?;
 
         let family = shell.family.unwrap_or_else(default_shell_family);
         let family = family
@@ -161,6 +182,7 @@ impl Config {
                 model: provider.model.unwrap_or_else(|| "gpt-4.1-mini".into()),
                 request_timeout_seconds: provider.request_timeout_seconds.unwrap_or(120),
             },
+            router,
             shell: ShellConfig { family },
             interaction: InteractionConfig { stance },
             commands: CommandConfig { risk },
@@ -193,6 +215,61 @@ impl Config {
         }
 
         Ok(())
+    }
+}
+
+fn model_router_config(raw: RawModelRouterConfig) -> Result<ModelRouterConfig, ConfigError> {
+    let mut config = ModelRouterConfig::default();
+    if let Some(enabled) = raw.enabled {
+        config.enabled = enabled;
+    }
+    if let Some(model) = raw.model {
+        config.model = non_empty_config_value("router.model", model)?;
+    }
+    if let Some(fallback_role) = raw.fallback_role {
+        config.fallback_role = non_empty_config_value("router.fallback_role", fallback_role)?;
+    }
+    if let Some(behavior) = raw.behavior {
+        config.behavior = non_empty_config_value("router.behavior", behavior)?;
+    }
+    if let Some(roles) = raw.roles {
+        let mut parsed = Vec::new();
+        for role in roles {
+            parsed.push(ModelRouterRole {
+                name: non_empty_config_value(
+                    "router.roles.name",
+                    role.name.ok_or_else(|| {
+                        ConfigError::Invalid("router.roles entries require name".into())
+                    })?,
+                )?,
+                model: non_empty_config_value(
+                    "router.roles.model",
+                    role.model.ok_or_else(|| {
+                        ConfigError::Invalid("router.roles entries require model".into())
+                    })?,
+                )?,
+                description: non_empty_config_value(
+                    "router.roles.description",
+                    role.description.ok_or_else(|| {
+                        ConfigError::Invalid("router.roles entries require description".into())
+                    })?,
+                )?,
+            });
+        }
+        config.roles = parsed;
+    }
+
+    config
+        .validate()
+        .map_err(|error| ConfigError::Invalid(error.to_string()))?;
+    Ok(config)
+}
+
+fn non_empty_config_value(name: &str, value: String) -> Result<String, ConfigError> {
+    if value.trim().is_empty() {
+        Err(ConfigError::Invalid(format!("{name} cannot be empty")))
+    } else {
+        Ok(value)
     }
 }
 
@@ -385,6 +462,7 @@ mod tests {
             shell: Some(RawShellConfig {
                 family: Some("cmd".into()),
             }),
+            router: None,
             interaction: None,
             commands: None,
             transcript: None,
@@ -405,6 +483,22 @@ mod tests {
 base_url = "http://localhost:11434/v1"
 model = "local-model"
 request_timeout_seconds = 45
+
+[router]
+enabled = true
+model = "qwen2.5-coder:7b"
+fallback_role = "instant"
+behavior = "Route to the smallest model that can answer well."
+
+[[router.roles]]
+name = "instant"
+model = "qwen2.5-coder:7b"
+description = "fast answers"
+
+[[router.roles]]
+name = "heavy"
+model = "coder-g4-26b"
+description = "deep technical work"
 
 [shell]
 family = "posix"
@@ -436,6 +530,11 @@ max_estimated_tokens = 3000
         assert_eq!(config.provider.api_key, "exoshell-local-provider");
         assert_eq!(config.provider.model, "local-model");
         assert_eq!(config.provider.request_timeout_seconds, 45);
+        assert!(config.router.enabled);
+        assert_eq!(config.router.model, "qwen2.5-coder:7b");
+        assert_eq!(config.router.fallback_role, "instant");
+        assert_eq!(config.router.roles.len(), 2);
+        assert_eq!(config.router.roles[1].model, "coder-g4-26b");
         assert_eq!(config.shell.family, ShellFamily::Posix);
         assert_eq!(config.interaction.stance, Stance::Audit);
         assert!(config.commands.risk.include_defaults);
@@ -470,6 +569,36 @@ max_estimated_tokens = 3000
         assert_eq!(config.provider.request_timeout_seconds, 120);
         assert!(config.commands.risk.include_defaults);
         assert!(config.commands.risk.rules.is_empty());
+        assert!(!config.router.enabled);
+        assert_eq!(
+            config
+                .router
+                .role("conversational")
+                .expect("conversational")
+                .model,
+            "qwen2.5-coder:7b"
+        );
+    }
+
+    #[test]
+    fn rejects_router_fallback_role_that_is_not_defined() {
+        let mut file = tempfile::NamedTempFile::new().expect("temp config");
+        write!(
+            file,
+            r#"
+[provider]
+base_url = "http://localhost:11434/v1"
+
+[router]
+enabled = true
+fallback_role = "missing"
+"#
+        )
+        .expect("write config");
+
+        let error = Config::load(Some(file.path())).expect_err("config should fail");
+
+        assert!(error.to_string().contains("fallback role"));
     }
 
     #[test]

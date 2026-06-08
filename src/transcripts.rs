@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::commands::CommandSuggestion;
 use crate::context::{ContextEntry, redacted_provider_details};
 use crate::prompts::Stance;
+use crate::providers::ModelRoute;
 use crate::shell::ShellFamily;
 
 #[derive(Debug, Clone)]
@@ -90,6 +91,14 @@ impl Transcript {
             id: id.to_string(),
             action: action.to_string(),
             note: note.to_string(),
+        });
+    }
+
+    pub fn record_model_route(&mut self, route: &ModelRoute) {
+        self.entries.push(TranscriptEntry::ModelRoute {
+            role: route.role.clone(),
+            model: route.model.clone(),
+            reason: route.reason.clone(),
         });
     }
 
@@ -209,6 +218,16 @@ impl Transcript {
                     markdown.push_str(&format!("- action: `{action}`\n"));
                     markdown.push_str(&format!("- note: `{note}`\n\n"));
                 }
+                TranscriptEntry::ModelRoute {
+                    role,
+                    model,
+                    reason,
+                } => {
+                    markdown.push_str("## Model Route\n\n");
+                    markdown.push_str(&format!("- role: `{role}`\n"));
+                    markdown.push_str(&format!("- model: `{model}`\n"));
+                    markdown.push_str(&format!("- reason: `{reason}`\n\n"));
+                }
             }
         }
 
@@ -252,6 +271,11 @@ enum TranscriptEntry {
         id: String,
         action: String,
         note: String,
+    },
+    ModelRoute {
+        role: String,
+        model: String,
+        reason: String,
     },
 }
 

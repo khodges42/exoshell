@@ -5,9 +5,10 @@ use crate::context::{ContextBudget, ContextEntry, ContextSize, render_prompt_con
 use crate::providers::{ChatMessage, ChatRole};
 use crate::shell::ShellFamily;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Stance {
+    #[default]
     Operator,
     Audit,
     Teach,
@@ -44,12 +45,6 @@ impl Stance {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ")
-    }
-}
-
-impl Default for Stance {
-    fn default() -> Self {
-        Self::Operator
     }
 }
 

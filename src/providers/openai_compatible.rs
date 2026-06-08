@@ -53,17 +53,25 @@ impl OpenAiCompatibleProvider {
     fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.base_url)
     }
-}
 
-#[async_trait::async_trait]
-impl Provider for OpenAiCompatibleProvider {
-    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
+    pub async fn chat_with_model(
+        &self,
+        request: ChatRequest,
+        model: &str,
+    ) -> Result<ChatResponse, ProviderError> {
         let payload = ChatCompletionRequest {
-            model: self.model.clone(),
+            model: model.to_string(),
             messages: request.messages,
             stream: request.stream,
         };
 
+        self.send_chat_completion(payload).await
+    }
+
+    async fn send_chat_completion(
+        &self,
+        payload: ChatCompletionRequest,
+    ) -> Result<ChatResponse, ProviderError> {
         let response = self
             .client
             .post(self.chat_url())
@@ -105,6 +113,19 @@ impl Provider for OpenAiCompatibleProvider {
             .ok_or_else(|| ProviderError::Response("missing assistant choice".into()))?;
 
         Ok(ChatResponse::Complete(content))
+    }
+}
+
+#[async_trait::async_trait]
+impl Provider for OpenAiCompatibleProvider {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ProviderError> {
+        let payload = ChatCompletionRequest {
+            model: self.model.clone(),
+            messages: request.messages,
+            stream: request.stream,
+        };
+
+        self.send_chat_completion(payload).await
     }
 }
 

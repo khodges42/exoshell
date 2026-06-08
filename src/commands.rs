@@ -156,7 +156,8 @@ impl CommandRisk {
     }
 }
 
-pub fn parse_command_suggestions(response: &str) -> Vec<CommandSuggestion> {
+#[cfg(test)]
+fn parse_command_suggestions(response: &str) -> Vec<CommandSuggestion> {
     parse_command_suggestions_with_policy(response, &CommandRiskPolicy::default())
 }
 
@@ -218,7 +219,8 @@ pub fn parse_command_suggestions_with_policy(
     suggestions
 }
 
-pub fn detect_command_risk(command: &str, shell: CommandShell) -> CommandRisk {
+#[cfg(test)]
+fn detect_command_risk(command: &str, shell: CommandShell) -> CommandRisk {
     detect_command_risk_with_policy(command, shell, &CommandRiskPolicy::default())
 }
 

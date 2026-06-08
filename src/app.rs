@@ -9,6 +9,7 @@ use crate::context::{
     render_context_details, render_context_list, render_context_stats,
 };
 use crate::formatting::render_assistant_output_with_policy;
+use crate::keybindings::render_keybindings;
 use crate::prompts::{Stance, assemble_prompt, render_prompt_estimate};
 use crate::providers::{ChatMessage, ChatRequest, ChatResponse, ChatRole, Provider, ProviderError};
 use crate::repl::ReplError;
@@ -72,6 +73,9 @@ impl App {
             Ok(Ok(ChatResponse::Complete(response))) => response,
             Ok(Ok(ChatResponse::Stream(chunks))) => chunks.concat(),
             Ok(Err(error)) => {
+                if let Some(route) = self.provider.last_model_route() {
+                    self.transcript.record_model_route(&route);
+                }
                 self.transcript.record_error(&error.to_string());
                 return Err(error.into());
             }
@@ -79,6 +83,9 @@ impl App {
         self.conversation
             .push(ChatMessage::new(ChatRole::Assistant, response.clone()));
         self.transcript.record_assistant(&response);
+        if let Some(route) = self.provider.last_model_route() {
+            self.transcript.record_model_route(&route);
+        }
         self.last_command_suggestions =
             parse_command_suggestions_with_policy(&response, &self.config.commands.risk);
         for suggestion in &self.last_command_suggestions {
@@ -100,6 +107,10 @@ impl App {
 
         if trimmed == "/help" {
             return Ok(help_overview().into());
+        }
+
+        if trimmed == "/keys" {
+            return Ok(render_keybindings());
         }
 
         if let Some(topic) = trimmed.strip_prefix("/help ") {
@@ -328,10 +339,11 @@ impl App {
 
     fn render_panel(&self) -> String {
         format!(
-            "Exoshell session\nstance: {}\nshell: {}\nprovider: openai-compatible\nmodel: {}\ntranscript: {}\n\nContext\n{}\n\nPrompt estimate\n{}",
+            "Exoshell session\nstance: {}\nshell: {}\nprovider: openai-compatible\nmodel: {}\nrouter: {}\ntranscript: {}\n\nContext\n{}\n\nPrompt estimate\n{}",
             self.config.interaction.stance,
             self.config.shell.family,
             self.config.provider.model,
+            self.render_router_status(),
             if self.config.transcript.enabled {
                 "enabled"
             } else {
@@ -339,6 +351,25 @@ impl App {
             },
             render_context_list(self.context_store.entries()),
             render_prompt_estimate(self.prompt_budget_estimate())
+        )
+    }
+
+    fn render_router_status(&self) -> String {
+        if !self.config.router.enabled {
+            return "disabled".into();
+        }
+
+        let roles = self
+            .config
+            .router
+            .roles
+            .iter()
+            .map(|role| format!("{}={}", role.name, role.model))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "enabled model={} fallback={} roles=[{}]",
+            self.config.router.model, self.config.router.fallback_role, roles
         )
     }
 
@@ -519,6 +550,7 @@ fn help_overview() -> &'static str {
 /explain <cmd-id>              explain a suggested command
 /discard <cmd-id>              mark a suggested command as discarded
 /panel                         show session, stance, provider, and context state
+/keys                          show keybinding fallbacks for the line REPL
 /multi                         enter multi-line input
 /exit                          quit and write transcript if enabled
 
@@ -536,7 +568,10 @@ fn help_topic(topic: &str) -> &'static str {
         "commands" => {
             "Suggested commands appear as fenced shell blocks and get IDs such as cmd-001. Use /copy, /explain, or /discard by ID. Copy prints the command when clipboard support is unavailable and never runs it."
         }
-        _ => "Unknown help topic. Try /help context, /help stance, or /help commands.",
+        "keys" => {
+            "The current line REPL does not install advanced terminal keybindings. Use /keys to see the predictable slash-command fallbacks for copy, explain, discard, context, and stance actions."
+        }
+        _ => "Unknown help topic. Try /help context, /help stance, /help commands, or /help keys.",
     }
 }
 
@@ -861,6 +896,16 @@ mod tests {
                 .expect("help")
                 .contains("/copy")
         );
+        assert!(
+            app.handle_command("/keys")
+                .expect("keys")
+                .contains("/discard <cmd-id>")
+        );
+        assert!(
+            app.handle_command("/help keys")
+                .expect("help keys")
+                .contains("line REPL")
+        );
     }
 
     #[tokio::test]
@@ -961,6 +1006,7 @@ mod tests {
                 model: "test-model".into(),
                 request_timeout_seconds: 120,
             },
+            router: crate::providers::router::ModelRouterConfig::default(),
             shell: ShellConfig {
                 family: ShellFamily::PowerShell,
             },

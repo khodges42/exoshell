@@ -10,6 +10,7 @@ use crate::context::{
 };
 use crate::formatting::render_assistant_output_with_policy;
 use crate::keybindings::render_keybindings;
+use crate::project::{ProjectError, detect_project, render_project_status};
 use crate::prompts::{Stance, assemble_prompt, render_prompt_estimate};
 use crate::providers::{ChatMessage, ChatRequest, ChatResponse, ChatRole, Provider, ProviderError};
 use crate::repl::ReplError;
@@ -103,6 +104,10 @@ impl App {
 
         if trimmed == "/panel" {
             return Ok(self.render_panel());
+        }
+
+        if trimmed == "/project" {
+            return self.render_project();
         }
 
         if trimmed == "/help" {
@@ -339,7 +344,7 @@ impl App {
 
     fn render_panel(&self) -> String {
         format!(
-            "Exoshell session\nstance: {}\nshell: {}\nprovider: openai-compatible\nmodel: {}\nrouter: {}\ntranscript: {}\n\nContext\n{}\n\nPrompt estimate\n{}",
+            "Exoshell session\nstance: {}\nshell: {}\nprovider: openai-compatible\nmodel: {}\nrouter: {}\ntranscript: {}\n\n{}\n\nContext\n{}\n\nPrompt estimate\n{}",
             self.config.interaction.stance,
             self.config.shell.family,
             self.config.provider.model,
@@ -349,9 +354,29 @@ impl App {
             } else {
                 "disabled"
             },
+            self.render_project_status_for_panel(),
             render_context_list(self.context_store.entries()),
             render_prompt_estimate(self.prompt_budget_estimate())
         )
+    }
+
+    fn render_project(&self) -> Result<String, AppError> {
+        let cwd = std::env::current_dir().map_err(|error| ProjectError::Read {
+            path: PathBuf::from("."),
+            error: error.to_string(),
+        })?;
+        let project = detect_project(&cwd, self.config.project.root.as_deref())?;
+        Ok(render_project_status(project.as_ref()))
+    }
+
+    fn render_project_status_for_panel(&self) -> String {
+        let Ok(cwd) = std::env::current_dir() else {
+            return "Project\nstatus: unavailable".into();
+        };
+        match detect_project(&cwd, self.config.project.root.as_deref()) {
+            Ok(project) => render_project_status(project.as_ref()),
+            Err(error) => format!("Project\nstatus: {error}"),
+        }
     }
 
     fn render_router_status(&self) -> String {
@@ -514,6 +539,8 @@ pub enum AppError {
     Transcript(#[from] TranscriptError),
     #[error(transparent)]
     Context(#[from] ContextError),
+    #[error(transparent)]
+    Project(#[from] ProjectError),
 }
 
 fn parse_context_priority_args(input: &str) -> Result<(&str, ContextPriority), ContextError> {
@@ -536,6 +563,7 @@ fn parse_context_priority_args(input: &str) -> Result<(&str, ContextPriority), C
 fn help_overview() -> &'static str {
     "Commands:
 /context                       list attached context
+/project                       show detected Git project and branch
 /context stats                 show context and prompt budget estimates
 /context show <id>             inspect a context entry
 /context enable|disable <id>   control model inclusion
@@ -562,6 +590,9 @@ fn help_topic(topic: &str) -> &'static str {
         "context" => {
             "Context is explicit and session-scoped. Use /add-note, /add-file, /add-dir, or /add-output to attach material. Use /context stats before requests to inspect attached context size and prompt estimates."
         }
+        "project" => {
+            "Project detection walks upward from the current directory or configured project.root to find a Git repository. Use /project or /panel to inspect the detected root and branch."
+        }
         "stance" => {
             "Stances change the compact prompt fragment used for the next request: operator is concise and action-oriented, audit focuses on risks, teach explains more, and quiet minimizes prose while keeping safety warnings."
         }
@@ -571,7 +602,9 @@ fn help_topic(topic: &str) -> &'static str {
         "keys" => {
             "The current line REPL does not install advanced terminal keybindings. Use /keys to see the predictable slash-command fallbacks for copy, explain, discard, context, and stance actions."
         }
-        _ => "Unknown help topic. Try /help context, /help stance, /help commands, or /help keys.",
+        _ => {
+            "Unknown help topic. Try /help context, /help project, /help stance, /help commands, or /help keys."
+        }
     }
 }
 
@@ -582,6 +615,7 @@ pub struct CliOptions {
     pub stance: Option<Stance>,
     pub transcript_enabled: Option<bool>,
     pub transcript_directory: Option<PathBuf>,
+    pub project_root: Option<PathBuf>,
     pub context_notes: Vec<String>,
     pub context_files: Vec<PathBuf>,
     pub no_color: bool,
@@ -635,6 +669,12 @@ impl CliOptions {
                     options.transcript_directory = Some(PathBuf::from(value));
                     options.transcript_enabled = Some(true);
                 }
+                "--project-root" => {
+                    let value = args.next().ok_or_else(|| {
+                        crate::config::ConfigError::Invalid("--project-root requires a path".into())
+                    })?;
+                    options.project_root = Some(PathBuf::from(value));
+                }
                 "--context-note" => {
                     let value = args.next().ok_or_else(|| {
                         crate::config::ConfigError::Invalid("--context-note requires text".into())
@@ -661,7 +701,7 @@ impl CliOptions {
     }
 
     pub fn help() -> &'static str {
-        "Usage: exoshell [--config <path>] [--shell powershell|posix] [--stance operator|audit|teach|quiet] [--context-note <text>] [--context-file <path>] [--no-transcript] [--transcript-dir <path>] [--no-color]\n\nStarts the Exoshell interactive model chat. Exoshell suggests commands; it does not execute them."
+        "Usage: exoshell [--config <path>] [--shell powershell|posix] [--stance operator|audit|teach|quiet] [--project-root <path>] [--context-note <text>] [--context-file <path>] [--no-transcript] [--transcript-dir <path>] [--no-color]\n\nStarts the Exoshell interactive model chat. Exoshell suggests commands; it does not execute them."
     }
 }
 
@@ -698,6 +738,8 @@ mod tests {
             "--no-transcript".to_string(),
             "--transcript-dir".to_string(),
             "out".to_string(),
+            "--project-root".to_string(),
+            "repo".to_string(),
             "--context-note".to_string(),
             "note".to_string(),
             "--context-file".to_string(),
@@ -710,6 +752,7 @@ mod tests {
         assert_eq!(options.stance, Some(Stance::Audit));
         assert_eq!(options.transcript_enabled, Some(true));
         assert_eq!(options.transcript_directory, Some(PathBuf::from("out")));
+        assert_eq!(options.project_root, Some(PathBuf::from("repo")));
         assert_eq!(options.context_notes, vec!["note".to_string()]);
         assert_eq!(options.context_files, vec![PathBuf::from("Cargo.toml")]);
         assert!(options.no_color);
@@ -892,6 +935,21 @@ mod tests {
                 .contains("stance: operator")
         );
         assert!(
+            app.handle_command("/panel")
+                .expect("panel")
+                .contains("Project")
+        );
+        assert!(
+            app.handle_command("/project")
+                .expect("project")
+                .contains("Project")
+        );
+        assert!(
+            app.handle_command("/help project")
+                .expect("help project")
+                .contains("Git repository")
+        );
+        assert!(
             app.handle_command("/help commands")
                 .expect("help")
                 .contains("/copy")
@@ -1007,6 +1065,7 @@ mod tests {
                 request_timeout_seconds: 120,
             },
             router: crate::providers::router::ModelRouterConfig::default(),
+            project: crate::config::ProjectConfig::default(),
             shell: ShellConfig {
                 family: ShellFamily::PowerShell,
             },

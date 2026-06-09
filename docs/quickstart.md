@@ -163,6 +163,19 @@ Select an operating stance:
 cargo run -- --stance audit
 ```
 
+Override detected project root:
+
+```sh
+cargo run -- --project-root path/to/repo
+```
+
+Or configure it:
+
+```toml
+[project]
+root = "path/to/repo"
+```
+
 ## First Session
 
 At the prompt:
@@ -182,6 +195,12 @@ Inspect context:
 ```text
 exo> /context
 exo> /context stats
+```
+
+Inspect detected Git project state:
+
+```text
+exo> /project
 ```
 
 Ask a question:
@@ -298,7 +317,7 @@ Show the current operating state:
 exo> /panel
 ```
 
-The panel includes stance, shell family, provider/model, transcript state, context entries, and prompt estimates.
+The panel includes stance, shell family, provider/model, transcript state, detected Git project, context entries, and prompt estimates.
 
 ## Keybinding Fallbacks
 

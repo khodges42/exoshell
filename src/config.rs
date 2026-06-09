@@ -15,6 +15,7 @@ use crate::shell::ShellFamily;
 pub struct Config {
     pub provider: ProviderConfig,
     pub router: ModelRouterConfig,
+    pub project: ProjectConfig,
     pub shell: ShellConfig,
     pub interaction: InteractionConfig,
     pub commands: CommandConfig,
@@ -46,6 +47,11 @@ pub struct CommandConfig {
     pub risk: CommandRiskPolicy,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProjectConfig {
+    pub root: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptConfig {
     pub directory: PathBuf,
@@ -71,6 +77,7 @@ impl ContextConfig {
 struct RawConfig {
     provider: Option<RawProviderConfig>,
     router: Option<RawModelRouterConfig>,
+    project: Option<RawProjectConfig>,
     shell: Option<RawShellConfig>,
     interaction: Option<RawInteractionConfig>,
     commands: Option<RawCommandConfig>,
@@ -100,6 +107,11 @@ struct RawModelRouterRole {
     name: Option<String>,
     model: Option<String>,
     description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawProjectConfig {
+    root: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -148,6 +160,7 @@ impl Config {
     fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
         let provider = raw.provider.unwrap_or_default();
         let router = raw.router.unwrap_or_default();
+        let project = raw.project.unwrap_or_default();
         let shell = raw.shell.unwrap_or_default();
         let interaction = raw.interaction.unwrap_or_default();
         let commands = raw.commands.unwrap_or_default();
@@ -183,6 +196,7 @@ impl Config {
                 request_timeout_seconds: provider.request_timeout_seconds.unwrap_or(120),
             },
             router,
+            project: ProjectConfig { root: project.root },
             shell: ShellConfig { family },
             interaction: InteractionConfig { stance },
             commands: CommandConfig { risk },
@@ -212,6 +226,10 @@ impl Config {
 
         if let Some(transcript_directory) = &options.transcript_directory {
             self.transcript.directory = transcript_directory.clone();
+        }
+
+        if let Some(project_root) = &options.project_root {
+            self.project.root = Some(project_root.clone());
         }
 
         Ok(())
@@ -462,6 +480,7 @@ mod tests {
             shell: Some(RawShellConfig {
                 family: Some("cmd".into()),
             }),
+            project: None,
             router: None,
             interaction: None,
             commands: None,
@@ -500,6 +519,9 @@ name = "heavy"
 model = "coder-g4-26b"
 description = "deep technical work"
 
+[project]
+root = "."
+
 [shell]
 family = "posix"
 
@@ -535,6 +557,7 @@ max_estimated_tokens = 3000
         assert_eq!(config.router.fallback_role, "instant");
         assert_eq!(config.router.roles.len(), 2);
         assert_eq!(config.router.roles[1].model, "coder-g4-26b");
+        assert_eq!(config.project.root, Some(PathBuf::from(".")));
         assert_eq!(config.shell.family, ShellFamily::Posix);
         assert_eq!(config.interaction.stance, Stance::Audit);
         assert!(config.commands.risk.include_defaults);
@@ -567,6 +590,7 @@ max_estimated_tokens = 3000
         assert_eq!(config.context.max_characters, None);
         assert_eq!(config.context.max_estimated_tokens, None);
         assert_eq!(config.provider.request_timeout_seconds, 120);
+        assert_eq!(config.project.root, None);
         assert!(config.commands.risk.include_defaults);
         assert!(config.commands.risk.rules.is_empty());
         assert!(!config.router.enabled);
@@ -643,6 +667,7 @@ include_defaults = false
             stance: Some(Stance::Teach),
             transcript_enabled: Some(false),
             transcript_directory: Some(tempdir.clone()),
+            project_root: Some(PathBuf::from("repo-root")),
             ..CliOptions::default()
         };
 
@@ -652,6 +677,7 @@ include_defaults = false
         assert_eq!(config.interaction.stance, Stance::Teach);
         assert!(!config.transcript.enabled);
         assert_eq!(config.transcript.directory, tempdir);
+        assert_eq!(config.project.root, Some(PathBuf::from("repo-root")));
     }
 
     #[test]

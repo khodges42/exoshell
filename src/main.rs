@@ -4,6 +4,7 @@ mod config;
 pub mod context;
 mod formatting;
 mod keybindings;
+mod project;
 mod prompts;
 mod providers;
 mod repl;

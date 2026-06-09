@@ -56,6 +56,9 @@ impl Repl {
                 || input.starts_with("/add-note ")
                 || input.starts_with("/add-file ")
                 || input.starts_with("/add-dir ")
+                || input == "/add-git-status"
+                || input == "/add-diff"
+                || input.starts_with("/add-diff ")
             {
                 match self.app.handle_command(&input) {
                     Ok(message) => println!("{message}"),

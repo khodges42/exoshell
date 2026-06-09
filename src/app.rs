@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -232,6 +233,15 @@ impl App {
             );
         }
 
+        if trimmed == "/add-git-status" {
+            return self.add_git_status_context();
+        }
+
+        if trimmed == "/add-diff" || trimmed.starts_with("/add-diff ") {
+            let args = trimmed.strip_prefix("/add-diff").unwrap_or("").trim();
+            return self.add_git_diff_context(args);
+        }
+
         Err(ContextError::InvalidInput(format!("unknown context command: {trimmed}")).into())
     }
 
@@ -282,6 +292,47 @@ impl App {
                 ..ContextProviderRequest::default()
             },
         )
+    }
+
+    pub fn add_git_status_context(&mut self) -> Result<String, AppError> {
+        let path = self.project_context_path()?;
+        self.add_context(
+            "git_status",
+            ContextProviderRequest {
+                path: Some(path),
+                ..ContextProviderRequest::default()
+            },
+        )
+    }
+
+    pub fn add_git_diff_context(&mut self, input: &str) -> Result<String, AppError> {
+        let (mode, file) = parse_git_diff_args(input)?;
+        let mut provider_options = HashMap::new();
+        provider_options.insert("mode".into(), mode.to_string());
+        if let Some(file) = file {
+            provider_options.insert("file".into(), file);
+        }
+
+        let path = self.project_context_path()?;
+        self.add_context(
+            "git_diff",
+            ContextProviderRequest {
+                path: Some(path),
+                provider_options,
+                ..ContextProviderRequest::default()
+            },
+        )
+    }
+
+    fn project_context_path(&self) -> Result<PathBuf, AppError> {
+        let cwd = std::env::current_dir().map_err(|error| ProjectError::Read {
+            path: PathBuf::from("."),
+            error: error.to_string(),
+        })?;
+        Ok(detect_project(&cwd, self.config.project.root.as_deref())?
+            .map(|project| project.root)
+            .or_else(|| self.config.project.root.clone())
+            .unwrap_or(cwd))
     }
 
     pub fn save_transcript(&self) -> Result<Option<PathBuf>, AppError> {
@@ -572,6 +623,8 @@ fn help_overview() -> &'static str {
 /add-note <text>               attach manual context
 /add-file <path>               attach a UTF-8 file
 /add-dir <path>                attach a shallow directory summary
+/add-git-status                attach current Git branch and status
+/add-diff [--staged] [path]    attach unstaged or staged Git diff context
 /add-output                    paste command output as explicit context
 /stance [name]                 show or set operator, audit, teach, or quiet
 /copy <cmd-id>                 print a suggested command; does not execute it
@@ -593,6 +646,9 @@ fn help_topic(topic: &str) -> &'static str {
         "project" => {
             "Project detection walks upward from the current directory or configured project.root to find a Git repository. Use /project or /panel to inspect the detected root and branch."
         }
+        "git" => {
+            "Use /add-git-status to attach current branch, staged files, modified files, and untracked files. Use /add-diff, /add-diff --staged, or /add-diff --staged <path> to attach read-only diff context."
+        }
         "stance" => {
             "Stances change the compact prompt fragment used for the next request: operator is concise and action-oriented, audit focuses on risks, teach explains more, and quiet minimizes prose while keeping safety warnings."
         }
@@ -603,9 +659,29 @@ fn help_topic(topic: &str) -> &'static str {
             "The current line REPL does not install advanced terminal keybindings. Use /keys to see the predictable slash-command fallbacks for copy, explain, discard, context, and stance actions."
         }
         _ => {
-            "Unknown help topic. Try /help context, /help project, /help stance, /help commands, or /help keys."
+            "Unknown help topic. Try /help context, /help project, /help git, /help stance, /help commands, or /help keys."
         }
     }
+}
+
+fn parse_git_diff_args(input: &str) -> Result<(&'static str, Option<String>), ContextError> {
+    let mut mode = "unstaged";
+    let mut file = None;
+    for part in input.split_whitespace() {
+        if part == "--staged" {
+            mode = "staged";
+        } else if part.starts_with('-') {
+            return Err(ContextError::InvalidInput(format!(
+                "unknown /add-diff option: {part}"
+            )));
+        } else if file.replace(part.to_string()).is_some() {
+            return Err(ContextError::InvalidInput(
+                "/add-diff accepts at most one path".into(),
+            ));
+        }
+    }
+
+    Ok((mode, file))
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -776,7 +852,9 @@ mod tests {
                 "file".to_string(),
                 "command_output".to_string(),
                 "stdin".to_string(),
-                "directory_summary".to_string()
+                "directory_summary".to_string(),
+                "git_status".to_string(),
+                "git_diff".to_string()
             ]
         );
         assert_eq!(app.context_store.total_size().characters, 0);
@@ -950,6 +1028,16 @@ mod tests {
                 .contains("Git repository")
         );
         assert!(
+            app.handle_command("/help git")
+                .expect("help git")
+                .contains("/add-git-status")
+        );
+        assert!(
+            app.handle_command("/help git")
+                .expect("help git")
+                .contains("/add-diff --staged")
+        );
+        assert!(
             app.handle_command("/help commands")
                 .expect("help")
                 .contains("/copy")
@@ -964,6 +1052,20 @@ mod tests {
                 .expect("help keys")
                 .contains("line REPL")
         );
+    }
+
+    #[test]
+    fn parses_git_diff_arguments() {
+        assert_eq!(
+            parse_git_diff_args("").expect("default"),
+            ("unstaged", None)
+        );
+        assert_eq!(
+            parse_git_diff_args("--staged src/app.rs").expect("staged file"),
+            ("staged", Some("src/app.rs".to_string()))
+        );
+        assert!(parse_git_diff_args("--cached").is_err());
+        assert!(parse_git_diff_args("one two").is_err());
     }
 
     #[tokio::test]

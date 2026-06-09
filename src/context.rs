@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -63,6 +64,8 @@ pub enum ContextKind {
     File,
     CommandOutput,
     DirectorySummary,
+    GitDiff,
+    GitStatus,
     Log,
     Note,
     SearchResult,
@@ -77,6 +80,8 @@ impl fmt::Display for ContextKind {
             Self::File => formatter.write_str("file"),
             Self::CommandOutput => formatter.write_str("command_output"),
             Self::DirectorySummary => formatter.write_str("directory_summary"),
+            Self::GitDiff => formatter.write_str("git_diff"),
+            Self::GitStatus => formatter.write_str("git_status"),
             Self::Log => formatter.write_str("log"),
             Self::Note => formatter.write_str("note"),
             Self::SearchResult => formatter.write_str("search_result"),
@@ -307,6 +312,8 @@ pub fn register_default_context_providers(
     registry.register(Box::new(CommandOutputContextProvider))?;
     registry.register(Box::new(StdinContextProvider))?;
     registry.register(Box::new(DirectorySummaryContextProvider::default()))?;
+    registry.register(Box::new(GitStatusContextProvider))?;
+    registry.register(Box::new(GitDiffContextProvider::default()))?;
     Ok(())
 }
 
@@ -549,6 +556,267 @@ impl ContextProvider for DirectorySummaryContextProvider {
             summary.lines.join("\n"),
         ))
     }
+}
+
+pub struct GitStatusContextProvider;
+
+impl ContextProvider for GitStatusContextProvider {
+    fn metadata(&self) -> ContextProviderMetadata {
+        ContextProviderMetadata {
+            name: "git_status".into(),
+            kind: ContextKind::GitStatus,
+            description: "captures read-only Git branch and working tree status".into(),
+        }
+    }
+
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+        let path = request
+            .path
+            .or(request.cwd)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let status = git_output(&path, &["status", "--porcelain=v1", "-b"], "git status")?;
+        let parsed = parse_git_status_porcelain(&status);
+
+        let mut provenance = ContextProvenance::new(ContextOrigin::Git);
+        provenance.source_path = Some(path.clone());
+        provenance
+            .provider_details
+            .insert("branch".into(), parsed.branch.clone());
+        provenance
+            .provider_details
+            .insert("staged_count".into(), parsed.staged.len().to_string());
+        provenance
+            .provider_details
+            .insert("modified_count".into(), parsed.modified.len().to_string());
+        provenance
+            .provider_details
+            .insert("untracked_count".into(), parsed.untracked.len().to_string());
+
+        Ok(ContextEntry::new(
+            "",
+            ContextKind::GitStatus,
+            request.title.unwrap_or_else(|| "git status".into()),
+            provenance,
+            render_git_status_context(&parsed),
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GitDiffContextProvider {
+    pub max_characters: usize,
+}
+
+impl Default for GitDiffContextProvider {
+    fn default() -> Self {
+        Self {
+            max_characters: 20_000,
+        }
+    }
+}
+
+impl ContextProvider for GitDiffContextProvider {
+    fn metadata(&self) -> ContextProviderMetadata {
+        ContextProviderMetadata {
+            name: "git_diff".into(),
+            kind: ContextKind::GitDiff,
+            description: "captures read-only staged or unstaged Git diffs".into(),
+        }
+    }
+
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+        let path = request
+            .path
+            .or(request.cwd)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let mode = request
+            .provider_options
+            .get("mode")
+            .map(String::as_str)
+            .unwrap_or("unstaged");
+        let file = request.provider_options.get("file").cloned();
+
+        let mut args = vec!["diff"];
+        match mode {
+            "staged" => args.push("--staged"),
+            "unstaged" => {}
+            other => {
+                return Err(ContextError::InvalidInput(format!(
+                    "unsupported git diff mode '{other}', expected staged or unstaged"
+                )));
+            }
+        }
+        if file.is_some() {
+            args.push("--");
+        }
+        if let Some(file) = file.as_deref() {
+            args.push(file);
+        }
+
+        let diff = git_output(&path, &args, "git diff")?;
+        let truncated = truncate_visible(&diff, self.max_characters);
+
+        let mut provenance = ContextProvenance::new(ContextOrigin::Git);
+        provenance.source_path = Some(path.clone());
+        provenance
+            .provider_details
+            .insert("mode".into(), mode.to_string());
+        provenance
+            .provider_details
+            .insert("file".into(), file.clone().unwrap_or_else(|| "all".into()));
+        provenance.provider_details.insert(
+            "truncated".into(),
+            (truncated.omitted_characters > 0).to_string(),
+        );
+        provenance.provider_details.insert(
+            "omitted_characters".into(),
+            truncated.omitted_characters.to_string(),
+        );
+
+        Ok(ContextEntry::new(
+            "",
+            ContextKind::GitDiff,
+            request
+                .title
+                .unwrap_or_else(|| git_diff_title(mode, file.as_deref())),
+            provenance,
+            if truncated.content.trim().is_empty() {
+                format!("mode: {mode}\ndiff: none")
+            } else {
+                format!("mode: {mode}\n{}", truncated.content)
+            },
+        ))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedGitStatus {
+    branch: String,
+    staged: Vec<String>,
+    modified: Vec<String>,
+    untracked: Vec<String>,
+}
+
+fn parse_git_status_porcelain(output: &str) -> ParsedGitStatus {
+    let mut parsed = ParsedGitStatus {
+        branch: "unknown".into(),
+        staged: Vec::new(),
+        modified: Vec::new(),
+        untracked: Vec::new(),
+    };
+
+    for line in output.lines() {
+        if let Some(branch) = line.strip_prefix("## ") {
+            parsed.branch = branch.trim().to_string();
+            continue;
+        }
+
+        if line.len() < 3 {
+            continue;
+        }
+
+        let mut chars = line.chars();
+        let index_status = chars.next().unwrap_or(' ');
+        let worktree_status = chars.next().unwrap_or(' ');
+        let path = chars.as_str().trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+
+        if index_status == '?' && worktree_status == '?' {
+            parsed.untracked.push(path);
+            continue;
+        }
+
+        if index_status != ' ' {
+            parsed.staged.push(path.clone());
+        }
+        if worktree_status != ' ' {
+            parsed.modified.push(path);
+        }
+    }
+
+    parsed
+}
+
+fn render_git_status_context(status: &ParsedGitStatus) -> String {
+    let mut rendered = String::new();
+    rendered.push_str(&format!("branch: {}\n", status.branch));
+    rendered.push_str("staged:\n");
+    render_path_list(&mut rendered, &status.staged);
+    rendered.push_str("modified:\n");
+    render_path_list(&mut rendered, &status.modified);
+    rendered.push_str("untracked:\n");
+    render_path_list(&mut rendered, &status.untracked);
+    rendered.trim_end().to_string()
+}
+
+fn render_path_list(rendered: &mut String, paths: &[String]) {
+    if paths.is_empty() {
+        rendered.push_str("- none\n");
+    } else {
+        for path in paths {
+            rendered.push_str(&format!("- {path}\n"));
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TruncatedContent {
+    content: String,
+    omitted_characters: usize,
+}
+
+fn truncate_visible(content: &str, max_characters: usize) -> TruncatedContent {
+    let total = content.chars().count();
+    if total <= max_characters {
+        return TruncatedContent {
+            content: content.to_string(),
+            omitted_characters: 0,
+        };
+    }
+
+    let kept = content.chars().take(max_characters).collect::<String>();
+    let omitted = total.saturating_sub(max_characters);
+    TruncatedContent {
+        content: format!("{kept}\n\n[truncated: omitted {omitted} characters]"),
+        omitted_characters: omitted,
+    }
+}
+
+fn git_diff_title(mode: &str, file: Option<&str>) -> String {
+    match file {
+        Some(file) => format!("git diff ({mode}): {file}"),
+        None => format!("git diff ({mode})"),
+    }
+}
+
+fn git_output(path: &Path, args: &[&str], label: &str) -> Result<String, ContextError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .map_err(|error| {
+            ContextError::InternalFailure(format!("failed to run {label}: {error}"))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(ContextError::InternalFailure(format!(
+            "{label} failed for {}: {}",
+            path.display(),
+            if stderr.is_empty() {
+                output.status.to_string()
+            } else {
+                stderr
+            }
+        )));
+    }
+
+    String::from_utf8(output.stdout).map_err(|error| {
+        ContextError::UnsupportedContent(format!("{label} output was not valid UTF-8: {error}"))
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1389,8 +1657,63 @@ mod tests {
                 "file".to_string(),
                 "command_output".to_string(),
                 "stdin".to_string(),
-                "directory_summary".to_string()
+                "directory_summary".to_string(),
+                "git_status".to_string(),
+                "git_diff".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn parses_git_status_porcelain_into_context_sections() {
+        let parsed = parse_git_status_porcelain(
+            "## main...origin/main\n M src/app.rs\nM  Cargo.toml\nMM src/context.rs\n?? notes.md\n",
+        );
+
+        assert_eq!(parsed.branch, "main...origin/main");
+        assert_eq!(
+            parsed.staged,
+            vec!["Cargo.toml".to_string(), "src/context.rs".to_string()]
+        );
+        assert_eq!(
+            parsed.modified,
+            vec!["src/app.rs".to_string(), "src/context.rs".to_string()]
+        );
+        assert_eq!(parsed.untracked, vec!["notes.md".to_string()]);
+
+        let rendered = render_git_status_context(&parsed);
+        assert!(rendered.contains("branch: main...origin/main"));
+        assert!(rendered.contains("staged:"));
+        assert!(rendered.contains("- Cargo.toml"));
+        assert!(rendered.contains("untracked:"));
+    }
+
+    #[test]
+    fn git_status_provider_metadata_is_git_context() {
+        let metadata = GitStatusContextProvider.metadata();
+
+        assert_eq!(metadata.name, "git_status");
+        assert_eq!(metadata.kind, ContextKind::GitStatus);
+    }
+
+    #[test]
+    fn git_diff_provider_metadata_is_git_context() {
+        let metadata = GitDiffContextProvider::default().metadata();
+
+        assert_eq!(metadata.name, "git_diff");
+        assert_eq!(metadata.kind, ContextKind::GitDiff);
+    }
+
+    #[test]
+    fn git_diff_truncation_is_visible() {
+        let truncated = truncate_visible("abcdef", 3);
+
+        assert_eq!(truncated.omitted_characters, 3);
+        assert!(truncated.content.contains("abc"));
+        assert!(
+            truncated
+                .content
+                .contains("[truncated: omitted 3 characters]")
         );
     }
 

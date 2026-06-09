@@ -104,3 +104,5 @@ Historical codenames should be tracked in docs/versioning.md below
 * 0.3.0 stance-lantern
 * 0.4.0 switchboard-relic
 * 0.5.0 branch-oracle
+* 0.6.0 status-satellite
+* 0.7.0 diff-lantern

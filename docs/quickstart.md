@@ -203,6 +203,20 @@ Inspect detected Git project state:
 exo> /project
 ```
 
+Attach current Git branch and working tree state as explicit context:
+
+```text
+exo> /add-git-status
+```
+
+Attach repository changes as explicit context:
+
+```text
+exo> /add-diff
+exo> /add-diff --staged
+exo> /add-diff --staged src/app.rs
+```
+
 Ask a question:
 
 ```text

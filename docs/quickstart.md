@@ -176,6 +176,17 @@ Or configure it:
 root = "path/to/repo"
 ```
 
+Repositories can also provide project-local Exoshell config:
+
+```toml
+# .exoshell.toml
+[project]
+honor_gitignore = true
+ignore = ["generated/", "*.snapshot"]
+```
+
+`.exoshell.local.toml` uses the same shape and overrides `.exoshell.toml`. Do not store secrets in project config; Exoshell reports likely secret keys in `/project config`.
+
 ## First Session
 
 At the prompt:
@@ -201,6 +212,7 @@ Inspect detected Git project state:
 
 ```text
 exo> /project
+exo> /project config
 ```
 
 Preview or attach a lightweight project summary:

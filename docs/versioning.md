@@ -84,6 +84,7 @@ contain version numbers
 imply compatibility guarantees
 contain offensive or discriminatory language
 be reused
+just plainly mention the feature.
 
 ## Naming Guidance
 
@@ -94,7 +95,7 @@ Generate a new codename.
 Verify that the codename has not been used previously.
 Add the codename to release notes and changelog entries.
 Preserve existing codenames in project history.
-
+Consider an interesting, cool sounding name.
 
 ## Historical Codenames
 Historical codenames should be tracked in docs/versioning.md below
@@ -109,3 +110,4 @@ Historical codenames should be tracked in docs/versioning.md below
 * 0.8.0 commit-oracle
 * 0.9.0 summary-relay
 * 0.10.0 search-relay
+* 0.11.0 config-compass

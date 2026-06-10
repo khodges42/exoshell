@@ -13,7 +13,9 @@ use crate::context::{
 use crate::formatting::render_assistant_output_with_policy;
 use crate::keybindings::render_keybindings;
 use crate::project::{
-    ProjectError, detect_project, render_project_status, render_project_summary, summarize_project,
+    ProjectError, detect_project, load_project_config,
+    render_project_config as render_project_config_report, render_project_status,
+    render_project_summary, summarize_project,
 };
 use crate::prompts::{Stance, assemble_prompt, render_prompt_estimate};
 use crate::providers::{ChatMessage, ChatRequest, ChatResponse, ChatRole, Provider, ProviderError};
@@ -112,6 +114,10 @@ impl App {
 
         if trimmed == "/project" {
             return self.render_project();
+        }
+
+        if trimmed == "/project config" {
+            return self.render_project_config();
         }
 
         if trimmed == "/project scan" || trimmed == "/project scan --preview" {
@@ -370,6 +376,14 @@ impl App {
         provider_options.insert("query".into(), query.trim().to_string());
 
         let path = self.project_context_path()?;
+        let project_config = load_project_config(&path)?;
+        provider_options.insert(
+            "honor_gitignore".into(),
+            project_config.config.honor_gitignore.to_string(),
+        );
+        if !project_config.config.ignore.is_empty() {
+            provider_options.insert("ignore".into(), project_config.config.ignore.join("\n"));
+        }
         self.add_context(
             "repo_search",
             ContextProviderRequest {
@@ -507,6 +521,12 @@ impl App {
         })?;
         let project = detect_project(&cwd, self.config.project.root.as_deref())?;
         Ok(render_project_status(project.as_ref()))
+    }
+
+    fn render_project_config(&self) -> Result<String, AppError> {
+        let path = self.project_context_path()?;
+        let report = load_project_config(&path)?;
+        Ok(render_project_config_report(&report))
     }
 
     fn render_project_status_for_panel(&self) -> String {
@@ -715,6 +735,7 @@ fn help_overview() -> &'static str {
     "Commands:
 /context                       list attached context
 /project                       show detected Git project and branch
+/project config                show project-local Exoshell config
 /project scan [--preview]      summarize project or add summary context
 /context stats                 show context and prompt budget estimates
 /context show <id>             inspect a context entry
@@ -748,7 +769,7 @@ fn help_topic(topic: &str) -> &'static str {
             "Context is explicit and session-scoped. Use /add-note, /add-file, /add-dir, or /add-output to attach material. Use /context stats before requests to inspect attached context size and prompt estimates."
         }
         "project" => {
-            "Project detection walks upward from the current directory or configured project.root to find a Git repository. Use /project or /panel to inspect the detected root and branch. Use /project scan --preview to inspect a lightweight repository summary, or /project scan to add it as context."
+            "Project detection walks upward from the current directory or configured project.root to find a Git repository. Use /project or /panel to inspect the detected root and branch. Use /project config to inspect .exoshell.toml, .exoshell.local.toml, ignore settings, and secret warnings. Use /project scan --preview to inspect a lightweight repository summary, or /project scan to add it as context."
         }
         "git" => {
             "Use /add-git-status to attach current branch, staged files, modified files, and untracked files. Use /add-diff, /add-diff --staged, or /add-diff --staged <path> to attach read-only diff context. Use /add-commits, /add-commits --count 10, /add-commits --author=alice, or /add-commits src/app.rs to attach recent history."
@@ -1186,9 +1207,14 @@ mod tests {
                 .contains("Project")
         );
         assert!(
+            app.handle_command("/help")
+                .expect("help")
+                .contains("/project config")
+        );
+        assert!(
             app.handle_command("/help project")
                 .expect("help project")
-                .contains("Git repository")
+                .contains(".exoshell.toml")
         );
         assert!(
             app.handle_command("/help git")
@@ -1260,11 +1286,11 @@ mod tests {
     fn project_scan_preview_and_context_add_use_summary() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let repo = tempdir.path().join("repo");
-        std::fs::create_dir_all(repo.join(".git")).expect("git dir");
-        std::fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("head");
-        std::fs::create_dir_all(repo.join("src")).expect("src dir");
-        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("cargo");
-        std::fs::write(repo.join("src").join("main.rs"), "fn main() {}\n").expect("main");
+        fs::create_dir_all(repo.join(".git")).expect("git dir");
+        fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("head");
+        fs::create_dir_all(repo.join("src")).expect("src dir");
+        fs::write(repo.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("cargo");
+        fs::write(repo.join("src").join("main.rs"), "fn main() {}\n").expect("main");
 
         let mut config = test_config();
         config.project.root = Some(repo);
@@ -1285,6 +1311,32 @@ mod tests {
                 .expect("context")
                 .contains("project_summary")
         );
+    }
+
+    #[test]
+    fn project_config_command_renders_local_config_and_warnings() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let repo = tempdir.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).expect("git dir");
+        fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("head");
+        fs::write(
+            repo.join(".exoshell.toml"),
+            "[project]\nignore = [\"generated/\"]\napi_key = \"bad\"\n",
+        )
+        .expect("config");
+
+        let mut config = test_config();
+        config.project.root = Some(repo);
+        let mut app = App::new(config, Box::new(NoopProvider));
+
+        let rendered = app
+            .handle_command("/project config")
+            .expect("project config");
+
+        assert!(rendered.contains("Project Config"));
+        assert!(rendered.contains(".exoshell.toml"));
+        assert!(rendered.contains("- generated/"));
+        assert!(rendered.contains("possible secret key"));
     }
 
     #[tokio::test]

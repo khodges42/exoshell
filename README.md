@@ -30,7 +30,7 @@ The current implementation supports the first shell-adjacent model chat mileston
 
 The codebase also contains the Phase 1.5 context engine foundation: context entries, provenance metadata, priority and size estimates, a session context store, provider registry, default manual/file/command-output/stdin/directory-summary providers, context REPL commands, deterministic pruning, budget checks, transcript events, startup context flags, piped stdin import, and prompt-context rendering.
 
-The active milestone is Phase 3. The current implementation adds stance selection, explicit prompt assembly, visible prompt/context budget estimates, command suggestion IDs, simple risky-command warnings, command copy/explain/discard actions, a plain terminal session panel, Phase 2 help text, configurable model routing, Git-native project detection, lightweight project scans, attachable Git status context, attachable Git diff context, attachable recent commit context, and attachable repository search context.
+The active milestone is Phase 3. The current implementation adds stance selection, explicit prompt assembly, visible prompt/context budget estimates, command suggestion IDs, simple risky-command warnings, command copy/explain/discard actions, a plain terminal session panel, Phase 2 help text, configurable model routing, Git-native project detection, project-local Exoshell config inspection, ignore-aware lightweight project scans, attachable Git status context, attachable Git diff context, attachable recent commit context, and attachable repository search context.
 
 The broader roadmap is tracked in [docs/PHASES.md](docs/PHASES.md) and [docs/tasks](docs/tasks).
 

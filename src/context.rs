@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
+use crate::project::RepositoryIgnoreRules;
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContextEntry {
     pub id: String,
@@ -704,9 +706,35 @@ impl ContextProvider for RepositorySearchContextProvider {
             .get("mode")
             .map(String::as_str)
             .unwrap_or("text");
+        let honor_gitignore = request
+            .provider_options
+            .get("honor_gitignore")
+            .map(|value| value == "true")
+            .unwrap_or(true);
+        let ignore_patterns = request
+            .provider_options
+            .get("ignore")
+            .map(|value| value.lines().map(str::to_string).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let use_ripgrep = honor_gitignore && ignore_patterns.is_empty();
+        let ignore_rules =
+            RepositoryIgnoreRules::from_parts(&path, honor_gitignore, ignore_patterns).map_err(
+                |error| {
+                    ContextError::InternalFailure(format!(
+                        "failed to load repository ignore rules: {error}"
+                    ))
+                },
+            )?;
         let search = match mode {
-            "text" => search_text(&path, &query, self.max_results, self.max_file_bytes)?,
-            "path" => search_paths(&path, &query, self.max_results)?,
+            "text" => search_text(
+                &path,
+                &query,
+                self.max_results,
+                self.max_file_bytes,
+                &ignore_rules,
+                use_ripgrep,
+            )?,
+            "path" => search_paths(&path, &query, self.max_results, &ignore_rules)?,
             other => {
                 return Err(ContextError::InvalidInput(format!(
                     "unsupported search mode '{other}', expected text or path"
@@ -734,6 +762,9 @@ impl ContextProvider for RepositorySearchContextProvider {
         provenance
             .provider_details
             .insert("truncated".into(), search.truncated.to_string());
+        provenance
+            .provider_details
+            .insert("honor_gitignore".into(), honor_gitignore.to_string());
 
         let content = if search.results.is_empty() {
             format!(
@@ -1018,50 +1049,60 @@ fn search_text(
     query: &str,
     max_results: usize,
     max_file_bytes: u64,
+    ignore_rules: &RepositoryIgnoreRules,
+    use_ripgrep: bool,
 ) -> Result<SearchCollection, ContextError> {
-    let rg_output = Command::new("rg")
-        .arg("--line-number")
-        .arg("--column")
-        .arg("--no-heading")
-        .arg("--color=never")
-        .arg("--fixed-strings")
-        .arg("--")
-        .arg(query)
-        .arg(root)
-        .output();
-    if let Ok(output) = rg_output {
-        let usable_output = output.status.success() || output.status.code() == Some(1);
-        if usable_output {
-            let stdout = String::from_utf8(output.stdout).map_err(|error| {
-                ContextError::UnsupportedContent(format!("rg output was not valid UTF-8: {error}"))
-            })?;
-            let scan_limit = max_results.saturating_add(1);
-            let all_results: Vec<String> = stdout
-                .lines()
-                .take(scan_limit)
-                .map(|line| normalize_search_line(root, line))
-                .collect();
-            let truncated = all_results.len() > max_results;
-            return Ok(SearchCollection {
-                engine: SearchEngine::Ripgrep,
-                results: all_results.into_iter().take(max_results).collect(),
-                truncated,
-            });
+    if use_ripgrep {
+        let rg_output = Command::new("rg")
+            .arg("--line-number")
+            .arg("--column")
+            .arg("--no-heading")
+            .arg("--color=never")
+            .arg("--fixed-strings")
+            .arg("--")
+            .arg(query)
+            .arg(root)
+            .output();
+        if let Ok(output) = rg_output {
+            let usable_output = output.status.success() || output.status.code() == Some(1);
+            if usable_output {
+                let stdout = String::from_utf8(output.stdout).map_err(|error| {
+                    ContextError::UnsupportedContent(format!(
+                        "rg output was not valid UTF-8: {error}"
+                    ))
+                })?;
+                let scan_limit = max_results.saturating_add(1);
+                let all_results: Vec<String> = stdout
+                    .lines()
+                    .take(scan_limit)
+                    .map(|line| normalize_search_line(root, line))
+                    .collect();
+                let truncated = all_results.len() > max_results;
+                return Ok(SearchCollection {
+                    engine: SearchEngine::Ripgrep,
+                    results: all_results.into_iter().take(max_results).collect(),
+                    truncated,
+                });
+            }
         }
     }
 
-    fallback_text_search(root, query, max_results, max_file_bytes)
+    fallback_text_search(root, query, max_results, max_file_bytes, ignore_rules)
 }
 
 fn search_paths(
     root: &Path,
     query: &str,
     max_results: usize,
+    ignore_rules: &RepositoryIgnoreRules,
 ) -> Result<SearchCollection, ContextError> {
     let mut results = Vec::new();
     let needle = query.to_lowercase();
     let scan_limit = max_results.saturating_add(1);
     visit_files(root, scan_limit, &mut |path| {
+        if ignore_rules.is_ignored(path) {
+            return Ok(true);
+        }
         let relative = relative_path(root, path);
         if relative.to_lowercase().contains(&needle) {
             results.push(relative);
@@ -1082,11 +1123,15 @@ fn fallback_text_search(
     query: &str,
     max_results: usize,
     max_file_bytes: u64,
+    ignore_rules: &RepositoryIgnoreRules,
 ) -> Result<SearchCollection, ContextError> {
     let mut results = Vec::new();
     let needle = query.to_lowercase();
     let scan_limit = max_results.saturating_add(1);
     visit_files(root, scan_limit, &mut |path| {
+        if ignore_rules.is_ignored(path) {
+            return Ok(true);
+        }
         let Ok(metadata) = fs::metadata(path) else {
             return Ok(true);
         };
@@ -2189,8 +2234,10 @@ mod tests {
         )
         .expect("write text");
 
-        let search =
-            fallback_text_search(tempdir.path(), "needle", 2, 256 * 1024).expect("fallback search");
+        let ignore_rules =
+            RepositoryIgnoreRules::from_parts(tempdir.path(), true, Vec::new()).expect("rules");
+        let search = fallback_text_search(tempdir.path(), "needle", 2, 256 * 1024, &ignore_rules)
+            .expect("fallback search");
 
         assert_eq!(search.engine, SearchEngine::Fallback);
         assert!(search.truncated);
@@ -2204,10 +2251,28 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("tempdir");
         fs::write(tempdir.path().join("large.txt"), "needle").expect("write large");
 
-        let search =
-            fallback_text_search(tempdir.path(), "needle", 10, 2).expect("fallback search");
+        let ignore_rules =
+            RepositoryIgnoreRules::from_parts(tempdir.path(), true, Vec::new()).expect("rules");
+        let search = fallback_text_search(tempdir.path(), "needle", 10, 2, &ignore_rules)
+            .expect("fallback search");
 
         assert!(search.results.is_empty());
+    }
+
+    #[test]
+    fn repository_search_honors_gitignore_in_fallback() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        fs::write(tempdir.path().join(".gitignore"), "ignored.txt\n").expect("gitignore");
+        fs::write(tempdir.path().join("ignored.txt"), "needle\n").expect("ignored");
+        fs::write(tempdir.path().join("kept.txt"), "needle\n").expect("kept");
+        let ignore_rules =
+            RepositoryIgnoreRules::from_parts(tempdir.path(), true, Vec::new()).expect("rules");
+
+        let search = fallback_text_search(tempdir.path(), "needle", 10, 256 * 1024, &ignore_rules)
+            .expect("fallback search");
+
+        assert_eq!(search.results.len(), 1);
+        assert!(search.results[0].contains("kept.txt"));
     }
 
     #[test]

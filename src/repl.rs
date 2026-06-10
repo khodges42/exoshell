@@ -61,6 +61,8 @@ impl Repl {
                 || input.starts_with("/add-diff ")
                 || input == "/add-commits"
                 || input.starts_with("/add-commits ")
+                || input.starts_with("/search ")
+                || input.starts_with("/search-path ")
             {
                 match self.app.handle_command(&input) {
                     Ok(message) => println!("{message}"),

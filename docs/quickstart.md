@@ -232,6 +232,13 @@ exo> /add-commits --count 10
 exo> /add-commits --author=alice src/app.rs
 ```
 
+Attach repository search results:
+
+```text
+exo> /search ContextProvider
+exo> /search-path Cargo.toml
+```
+
 Ask a question:
 
 ```text

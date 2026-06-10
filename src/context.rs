@@ -319,6 +319,7 @@ pub fn register_default_context_providers(
     registry.register(Box::new(GitStatusContextProvider))?;
     registry.register(Box::new(GitDiffContextProvider::default()))?;
     registry.register(Box::new(GitCommitContextProvider))?;
+    registry.register(Box::new(RepositorySearchContextProvider::default()))?;
     Ok(())
 }
 
@@ -659,6 +660,113 @@ impl ContextProvider for GitCommitContextProvider {
 }
 
 #[derive(Debug, Clone)]
+pub struct RepositorySearchContextProvider {
+    pub max_results: usize,
+    pub max_file_bytes: u64,
+}
+
+impl Default for RepositorySearchContextProvider {
+    fn default() -> Self {
+        Self {
+            max_results: 100,
+            max_file_bytes: 256 * 1024,
+        }
+    }
+}
+
+impl ContextProvider for RepositorySearchContextProvider {
+    fn metadata(&self) -> ContextProviderMetadata {
+        ContextProviderMetadata {
+            name: "repo_search".into(),
+            kind: ContextKind::SearchResult,
+            description: "searches repository text or paths as explicit context".into(),
+        }
+    }
+
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+        let path = request
+            .path
+            .or(request.cwd)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let query = request
+            .provider_options
+            .get("query")
+            .ok_or_else(|| ContextError::InvalidInput("search query is required".into()))?
+            .trim()
+            .to_string();
+        if query.is_empty() {
+            return Err(ContextError::InvalidInput(
+                "search query cannot be empty".into(),
+            ));
+        }
+        let mode = request
+            .provider_options
+            .get("mode")
+            .map(String::as_str)
+            .unwrap_or("text");
+        let search = match mode {
+            "text" => search_text(&path, &query, self.max_results, self.max_file_bytes)?,
+            "path" => search_paths(&path, &query, self.max_results)?,
+            other => {
+                return Err(ContextError::InvalidInput(format!(
+                    "unsupported search mode '{other}', expected text or path"
+                )));
+            }
+        };
+
+        let mut provenance = ContextProvenance::new(ContextOrigin::Search);
+        provenance.source_path = Some(path);
+        provenance
+            .provider_details
+            .insert("mode".into(), mode.to_string());
+        provenance
+            .provider_details
+            .insert("query".into(), query.clone());
+        provenance
+            .provider_details
+            .insert("engine".into(), search.engine.to_string());
+        provenance
+            .provider_details
+            .insert("result_count".into(), search.results.len().to_string());
+        provenance
+            .provider_details
+            .insert("max_results".into(), self.max_results.to_string());
+        provenance
+            .provider_details
+            .insert("truncated".into(), search.truncated.to_string());
+
+        let content = if search.results.is_empty() {
+            format!(
+                "mode: {mode}\nquery: {query}\nengine: {}\ntruncated: {}\nresults: none",
+                search.engine, search.truncated
+            )
+        } else {
+            format!(
+                "mode: {mode}\nquery: {query}\nengine: {}\ntruncated: {}\nresults:\n{}",
+                search.engine,
+                search.truncated,
+                search
+                    .results
+                    .iter()
+                    .map(|result| format!("- {result}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        };
+
+        Ok(ContextEntry::new(
+            "",
+            ContextKind::SearchResult,
+            request
+                .title
+                .unwrap_or_else(|| format!("repository {mode} search: {query}")),
+            provenance,
+            content,
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct GitDiffContextProvider {
     pub max_characters: usize,
 }
@@ -881,6 +989,191 @@ fn git_log_output(
             stderr
         }
     )))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SearchCollection {
+    engine: SearchEngine,
+    results: Vec<String>,
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchEngine {
+    Ripgrep,
+    Fallback,
+}
+
+impl fmt::Display for SearchEngine {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ripgrep => formatter.write_str("ripgrep"),
+            Self::Fallback => formatter.write_str("fallback"),
+        }
+    }
+}
+
+fn search_text(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_file_bytes: u64,
+) -> Result<SearchCollection, ContextError> {
+    let rg_output = Command::new("rg")
+        .arg("--line-number")
+        .arg("--column")
+        .arg("--no-heading")
+        .arg("--color=never")
+        .arg("--fixed-strings")
+        .arg("--")
+        .arg(query)
+        .arg(root)
+        .output();
+    if let Ok(output) = rg_output {
+        let usable_output = output.status.success() || output.status.code() == Some(1);
+        if usable_output {
+            let stdout = String::from_utf8(output.stdout).map_err(|error| {
+                ContextError::UnsupportedContent(format!("rg output was not valid UTF-8: {error}"))
+            })?;
+            let scan_limit = max_results.saturating_add(1);
+            let all_results: Vec<String> = stdout
+                .lines()
+                .take(scan_limit)
+                .map(|line| normalize_search_line(root, line))
+                .collect();
+            let truncated = all_results.len() > max_results;
+            return Ok(SearchCollection {
+                engine: SearchEngine::Ripgrep,
+                results: all_results.into_iter().take(max_results).collect(),
+                truncated,
+            });
+        }
+    }
+
+    fallback_text_search(root, query, max_results, max_file_bytes)
+}
+
+fn search_paths(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+) -> Result<SearchCollection, ContextError> {
+    let mut results = Vec::new();
+    let needle = query.to_lowercase();
+    let scan_limit = max_results.saturating_add(1);
+    visit_files(root, scan_limit, &mut |path| {
+        let relative = relative_path(root, path);
+        if relative.to_lowercase().contains(&needle) {
+            results.push(relative);
+        }
+        Ok(results.len() < scan_limit)
+    })?;
+    let truncated = results.len() > max_results;
+    results.truncate(max_results);
+    Ok(SearchCollection {
+        engine: SearchEngine::Fallback,
+        results,
+        truncated,
+    })
+}
+
+fn fallback_text_search(
+    root: &Path,
+    query: &str,
+    max_results: usize,
+    max_file_bytes: u64,
+) -> Result<SearchCollection, ContextError> {
+    let mut results = Vec::new();
+    let needle = query.to_lowercase();
+    let scan_limit = max_results.saturating_add(1);
+    visit_files(root, scan_limit, &mut |path| {
+        let Ok(metadata) = fs::metadata(path) else {
+            return Ok(true);
+        };
+        if metadata.len() > max_file_bytes {
+            return Ok(true);
+        }
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(true),
+        };
+        if bytes.contains(&0) {
+            return Ok(true);
+        }
+        let Ok(content) = String::from_utf8(bytes) else {
+            return Ok(true);
+        };
+        for (index, line) in content.lines().enumerate() {
+            let lower_line = line.to_lowercase();
+            if let Some(column_index) = lower_line.find(&needle) {
+                results.push(format!(
+                    "{}:{}:{}:{}",
+                    relative_path(root, path),
+                    index + 1,
+                    column_index + 1,
+                    line.trim()
+                ));
+                if results.len() >= scan_limit {
+                    break;
+                }
+            }
+        }
+        Ok(results.len() < scan_limit)
+    })?;
+    let truncated = results.len() > max_results;
+    results.truncate(max_results);
+    Ok(SearchCollection {
+        engine: SearchEngine::Fallback,
+        results,
+        truncated,
+    })
+}
+
+fn visit_files<F>(root: &Path, max_results: usize, visitor: &mut F) -> Result<(), ContextError>
+where
+    F: FnMut(&Path) -> Result<bool, ContextError>,
+{
+    if max_results == 0 {
+        return Ok(());
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let entries = match fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if is_noisy_path(&name) {
+                continue;
+            }
+            let entry_path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(entry_path);
+            } else if file_type.is_file() && !visitor(&entry_path)? {
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn normalize_search_line(root: &Path, line: &str) -> String {
+    let root = root.to_string_lossy();
+    line.strip_prefix(root.as_ref())
+        .and_then(|line| line.strip_prefix(std::path::MAIN_SEPARATOR))
+        .unwrap_or(line)
+        .replace('\\', "/")
+}
+
+fn relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1782,7 +2075,8 @@ mod tests {
                 "directory_summary".to_string(),
                 "git_status".to_string(),
                 "git_diff".to_string(),
-                "git_commits".to_string()
+                "git_commits".to_string(),
+                "repo_search".to_string()
             ]
         );
     }
@@ -1846,6 +2140,74 @@ mod tests {
 
         assert_eq!(metadata.name, "git_commits");
         assert_eq!(metadata.kind, ContextKind::GitHistory);
+    }
+
+    #[test]
+    fn repository_search_provider_metadata_is_search_context() {
+        let metadata = RepositorySearchContextProvider::default().metadata();
+
+        assert_eq!(metadata.name, "repo_search");
+        assert_eq!(metadata.kind, ContextKind::SearchResult);
+    }
+
+    #[test]
+    fn repository_search_path_mode_collects_matching_paths() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let src = tempdir.path().join("src");
+        fs::create_dir(&src).expect("create src");
+        fs::write(src.join("ContextProvider.rs"), "needle").expect("write file");
+        fs::write(tempdir.path().join("README.md"), "readme").expect("write readme");
+
+        let provider = RepositorySearchContextProvider::default();
+        let mut provider_options = HashMap::new();
+        provider_options.insert("mode".into(), "path".into());
+        provider_options.insert("query".into(), "contextprovider".into());
+
+        let entry = provider
+            .collect(ContextProviderRequest {
+                path: Some(tempdir.path().to_path_buf()),
+                provider_options,
+                ..ContextProviderRequest::default()
+            })
+            .expect("search context");
+
+        assert_eq!(entry.kind, ContextKind::SearchResult);
+        assert!(entry.content.contains("mode: path"));
+        assert!(entry.content.contains("src/ContextProvider.rs"));
+        assert_eq!(
+            entry.provenance.provider_details.get("engine"),
+            Some(&"fallback".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_text_search_reports_locations_and_truncation() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            tempdir.path().join("alpha.txt"),
+            "first Needle\nsecond needle\nthird needle\n",
+        )
+        .expect("write text");
+
+        let search =
+            fallback_text_search(tempdir.path(), "needle", 2, 256 * 1024).expect("fallback search");
+
+        assert_eq!(search.engine, SearchEngine::Fallback);
+        assert!(search.truncated);
+        assert_eq!(search.results.len(), 2);
+        assert!(search.results[0].contains("alpha.txt:1:7:first Needle"));
+        assert!(search.results[1].contains("alpha.txt:2:8:second needle"));
+    }
+
+    #[test]
+    fn fallback_text_search_skips_large_files() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        fs::write(tempdir.path().join("large.txt"), "needle").expect("write large");
+
+        let search =
+            fallback_text_search(tempdir.path(), "needle", 10, 2).expect("fallback search");
+
+        assert!(search.results.is_empty());
     }
 
     #[test]

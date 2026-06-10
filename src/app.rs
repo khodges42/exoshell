@@ -254,6 +254,14 @@ impl App {
             return self.add_git_commit_context(args);
         }
 
+        if let Some(query) = trimmed.strip_prefix("/search-path ") {
+            return self.add_repository_search_context("path", query.trim());
+        }
+
+        if let Some(query) = trimmed.strip_prefix("/search ") {
+            return self.add_repository_search_context("text", query.trim());
+        }
+
         Err(ContextError::InvalidInput(format!("unknown context command: {trimmed}")).into())
     }
 
@@ -344,6 +352,29 @@ impl App {
             ContextProviderRequest {
                 path: Some(path),
                 provider_options: options,
+                ..ContextProviderRequest::default()
+            },
+        )
+    }
+
+    pub fn add_repository_search_context(
+        &mut self,
+        mode: &str,
+        query: &str,
+    ) -> Result<String, AppError> {
+        if query.trim().is_empty() {
+            return Err(ContextError::InvalidInput("search query cannot be empty".into()).into());
+        }
+        let mut provider_options = HashMap::new();
+        provider_options.insert("mode".into(), mode.to_string());
+        provider_options.insert("query".into(), query.trim().to_string());
+
+        let path = self.project_context_path()?;
+        self.add_context(
+            "repo_search",
+            ContextProviderRequest {
+                path: Some(path),
+                provider_options,
                 ..ContextProviderRequest::default()
             },
         )
@@ -696,6 +727,8 @@ fn help_overview() -> &'static str {
 /add-git-status                attach current Git branch and status
 /add-diff [--staged] [path]    attach unstaged or staged Git diff context
 /add-commits [options] [path]  attach recent Git commit history
+/search <query>                attach repository text search results
+/search-path <query>           attach repository path search results
 /add-output                    paste command output as explicit context
 /stance [name]                 show or set operator, audit, teach, or quiet
 /copy <cmd-id>                 print a suggested command; does not execute it
@@ -720,6 +753,9 @@ fn help_topic(topic: &str) -> &'static str {
         "git" => {
             "Use /add-git-status to attach current branch, staged files, modified files, and untracked files. Use /add-diff, /add-diff --staged, or /add-diff --staged <path> to attach read-only diff context. Use /add-commits, /add-commits --count 10, /add-commits --author=alice, or /add-commits src/app.rs to attach recent history."
         }
+        "search" => {
+            "Use /search <query> to attach repository text matches with file, line, and column locations. Use /search-path <query> to attach matching repository paths. Text search uses ripgrep when available and falls back to a bounded repository walk."
+        }
         "stance" => {
             "Stances change the compact prompt fragment used for the next request: operator is concise and action-oriented, audit focuses on risks, teach explains more, and quiet minimizes prose while keeping safety warnings."
         }
@@ -730,7 +766,7 @@ fn help_topic(topic: &str) -> &'static str {
             "The current line REPL does not install advanced terminal keybindings. Use /keys to see the predictable slash-command fallbacks for copy, explain, discard, context, and stance actions."
         }
         _ => {
-            "Unknown help topic. Try /help context, /help project, /help git, /help stance, /help commands, or /help keys."
+            "Unknown help topic. Try /help context, /help project, /help git, /help search, /help stance, /help commands, or /help keys."
         }
     }
 }
@@ -888,6 +924,7 @@ mod tests {
     use crate::config::{
         CommandConfig, InteractionConfig, ProviderConfig, ShellConfig, TranscriptConfig,
     };
+    use std::fs;
     use std::sync::{Arc, Mutex};
 
     #[test]
@@ -956,7 +993,8 @@ mod tests {
                 "directory_summary".to_string(),
                 "git_status".to_string(),
                 "git_diff".to_string(),
-                "git_commits".to_string()
+                "git_commits".to_string(),
+                "repo_search".to_string()
             ]
         );
         assert_eq!(app.context_store.total_size().characters, 0);
@@ -1009,6 +1047,29 @@ mod tests {
             app.handle_command("/context remove ctx-001")
                 .expect("remove"),
             "removed ctx-001"
+        );
+    }
+
+    #[test]
+    fn search_path_command_adds_repository_search_context() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let src = tempdir.path().join("src");
+        fs::create_dir(&src).expect("create src");
+        fs::write(src.join("app.rs"), "fn main() {}\n").expect("write app");
+
+        let mut config = test_config();
+        config.project.root = Some(tempdir.path().to_path_buf());
+        let mut app = App::new(config, Box::new(NoopProvider));
+
+        let message = app
+            .handle_command("/search-path APP")
+            .expect("search path command");
+
+        assert_eq!(message, "added ctx-001 (repository path search: APP)");
+        assert!(
+            app.handle_command("/context show ctx-001")
+                .expect("show")
+                .contains("src/app.rs")
         );
     }
 
@@ -1138,6 +1199,16 @@ mod tests {
             app.handle_command("/help git")
                 .expect("help git")
                 .contains("/add-diff --staged")
+        );
+        assert!(
+            app.handle_command("/help")
+                .expect("help")
+                .contains("/search <query>")
+        );
+        assert!(
+            app.handle_command("/help search")
+                .expect("help search")
+                .contains("ripgrep")
         );
         assert!(
             app.handle_command("/help commands")

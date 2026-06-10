@@ -242,6 +242,11 @@ impl App {
             return self.add_git_diff_context(args);
         }
 
+        if trimmed == "/add-commits" || trimmed.starts_with("/add-commits ") {
+            let args = trimmed.strip_prefix("/add-commits").unwrap_or("").trim();
+            return self.add_git_commit_context(args);
+        }
+
         Err(ContextError::InvalidInput(format!("unknown context command: {trimmed}")).into())
     }
 
@@ -319,6 +324,19 @@ impl App {
             ContextProviderRequest {
                 path: Some(path),
                 provider_options,
+                ..ContextProviderRequest::default()
+            },
+        )
+    }
+
+    pub fn add_git_commit_context(&mut self, input: &str) -> Result<String, AppError> {
+        let options = parse_git_commit_args(input)?;
+        let path = self.project_context_path()?;
+        self.add_context(
+            "git_commits",
+            ContextProviderRequest {
+                path: Some(path),
+                provider_options: options,
                 ..ContextProviderRequest::default()
             },
         )
@@ -625,6 +643,7 @@ fn help_overview() -> &'static str {
 /add-dir <path>                attach a shallow directory summary
 /add-git-status                attach current Git branch and status
 /add-diff [--staged] [path]    attach unstaged or staged Git diff context
+/add-commits [options] [path]  attach recent Git commit history
 /add-output                    paste command output as explicit context
 /stance [name]                 show or set operator, audit, teach, or quiet
 /copy <cmd-id>                 print a suggested command; does not execute it
@@ -647,7 +666,7 @@ fn help_topic(topic: &str) -> &'static str {
             "Project detection walks upward from the current directory or configured project.root to find a Git repository. Use /project or /panel to inspect the detected root and branch."
         }
         "git" => {
-            "Use /add-git-status to attach current branch, staged files, modified files, and untracked files. Use /add-diff, /add-diff --staged, or /add-diff --staged <path> to attach read-only diff context."
+            "Use /add-git-status to attach current branch, staged files, modified files, and untracked files. Use /add-diff, /add-diff --staged, or /add-diff --staged <path> to attach read-only diff context. Use /add-commits, /add-commits --count 10, /add-commits --author=alice, or /add-commits src/app.rs to attach recent history."
         }
         "stance" => {
             "Stances change the compact prompt fragment used for the next request: operator is concise and action-oriented, audit focuses on risks, teach explains more, and quiet minimizes prose while keeping safety warnings."
@@ -682,6 +701,36 @@ fn parse_git_diff_args(input: &str) -> Result<(&'static str, Option<String>), Co
     }
 
     Ok((mode, file))
+}
+
+fn parse_git_commit_args(input: &str) -> Result<HashMap<String, String>, ContextError> {
+    let mut options = HashMap::new();
+    let mut parts = input.split_whitespace();
+    while let Some(part) = parts.next() {
+        if part == "--count" {
+            let count = parts
+                .next()
+                .ok_or_else(|| ContextError::InvalidInput("--count requires a value".into()))?;
+            options.insert("count".into(), count.to_string());
+        } else if let Some(author) = part.strip_prefix("--author=") {
+            if author.trim().is_empty() {
+                return Err(ContextError::InvalidInput(
+                    "--author requires a non-empty value".into(),
+                ));
+            }
+            options.insert("author".into(), author.to_string());
+        } else if part.starts_with('-') {
+            return Err(ContextError::InvalidInput(format!(
+                "unknown /add-commits option: {part}"
+            )));
+        } else if options.insert("file".into(), part.to_string()).is_some() {
+            return Err(ContextError::InvalidInput(
+                "/add-commits accepts at most one path".into(),
+            ));
+        }
+    }
+
+    Ok(options)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -854,7 +903,8 @@ mod tests {
                 "stdin".to_string(),
                 "directory_summary".to_string(),
                 "git_status".to_string(),
-                "git_diff".to_string()
+                "git_diff".to_string(),
+                "git_commits".to_string()
             ]
         );
         assert_eq!(app.context_store.total_size().characters, 0);
@@ -1066,6 +1116,21 @@ mod tests {
         );
         assert!(parse_git_diff_args("--cached").is_err());
         assert!(parse_git_diff_args("one two").is_err());
+    }
+
+    #[test]
+    fn parses_git_commit_arguments() {
+        assert!(parse_git_commit_args("").expect("default").is_empty());
+
+        let options =
+            parse_git_commit_args("--count 10 --author=alice src/app.rs").expect("commit args");
+        assert_eq!(options.get("count"), Some(&"10".to_string()));
+        assert_eq!(options.get("author"), Some(&"alice".to_string()));
+        assert_eq!(options.get("file"), Some(&"src/app.rs".to_string()));
+
+        assert!(parse_git_commit_args("--count").is_err());
+        assert!(parse_git_commit_args("--author=").is_err());
+        assert!(parse_git_commit_args("one two").is_err());
     }
 
     #[tokio::test]

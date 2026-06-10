@@ -217,6 +217,14 @@ exo> /add-diff --staged
 exo> /add-diff --staged src/app.rs
 ```
 
+Attach recent commit history:
+
+```text
+exo> /add-commits
+exo> /add-commits --count 10
+exo> /add-commits --author=alice src/app.rs
+```
+
 Ask a question:
 
 ```text

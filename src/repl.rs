@@ -59,6 +59,8 @@ impl Repl {
                 || input == "/add-git-status"
                 || input == "/add-diff"
                 || input.starts_with("/add-diff ")
+                || input == "/add-commits"
+                || input.starts_with("/add-commits ")
             {
                 match self.app.handle_command(&input) {
                     Ok(message) => println!("{message}"),

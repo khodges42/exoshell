@@ -65,6 +65,7 @@ pub enum ContextKind {
     CommandOutput,
     DirectorySummary,
     GitDiff,
+    GitHistory,
     GitStatus,
     Log,
     Note,
@@ -81,6 +82,7 @@ impl fmt::Display for ContextKind {
             Self::CommandOutput => formatter.write_str("command_output"),
             Self::DirectorySummary => formatter.write_str("directory_summary"),
             Self::GitDiff => formatter.write_str("git_diff"),
+            Self::GitHistory => formatter.write_str("git_history"),
             Self::GitStatus => formatter.write_str("git_status"),
             Self::Log => formatter.write_str("log"),
             Self::Note => formatter.write_str("note"),
@@ -314,6 +316,7 @@ pub fn register_default_context_providers(
     registry.register(Box::new(DirectorySummaryContextProvider::default()))?;
     registry.register(Box::new(GitStatusContextProvider))?;
     registry.register(Box::new(GitDiffContextProvider::default()))?;
+    registry.register(Box::new(GitCommitContextProvider))?;
     Ok(())
 }
 
@@ -602,6 +605,57 @@ impl ContextProvider for GitStatusContextProvider {
     }
 }
 
+pub struct GitCommitContextProvider;
+
+impl ContextProvider for GitCommitContextProvider {
+    fn metadata(&self) -> ContextProviderMetadata {
+        ContextProviderMetadata {
+            name: "git_commits".into(),
+            kind: ContextKind::GitHistory,
+            description: "captures recent Git commits and changed files".into(),
+        }
+    }
+
+    fn collect(&self, request: ContextProviderRequest) -> Result<ContextEntry, ContextError> {
+        let path = request
+            .path
+            .or(request.cwd)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let count = parse_git_commit_count(request.provider_options.get("count"))?;
+        let author = request.provider_options.get("author").cloned();
+        let file = request.provider_options.get("file").cloned();
+        let log = git_log_output(&path, count, author.as_deref(), file.as_deref())?;
+        let content = if log.trim().is_empty() {
+            "recent commits: none".to_string()
+        } else {
+            log
+        };
+
+        let mut provenance = ContextProvenance::new(ContextOrigin::Git);
+        provenance.source_path = Some(path);
+        provenance
+            .provider_details
+            .insert("count".into(), count.to_string());
+        provenance.provider_details.insert(
+            "author_filter".into(),
+            author.unwrap_or_else(|| "none".into()),
+        );
+        provenance
+            .provider_details
+            .insert("path_filter".into(), file.unwrap_or_else(|| "none".into()));
+
+        Ok(ContextEntry::new(
+            "",
+            ContextKind::GitHistory,
+            request
+                .title
+                .unwrap_or_else(|| format!("recent git commits ({count})")),
+            provenance,
+            content,
+        ))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GitDiffContextProvider {
     pub max_characters: usize,
@@ -759,6 +813,72 @@ fn render_path_list(rendered: &mut String, paths: &[String]) {
             rendered.push_str(&format!("- {path}\n"));
         }
     }
+}
+
+fn parse_git_commit_count(value: Option<&String>) -> Result<usize, ContextError> {
+    let Some(value) = value else {
+        return Ok(5);
+    };
+    let count = value.parse::<usize>().map_err(|_| {
+        ContextError::InvalidInput(format!(
+            "git commit count must be a positive integer: {value}"
+        ))
+    })?;
+    if count == 0 || count > 100 {
+        return Err(ContextError::InvalidInput(
+            "git commit count must be between 1 and 100".into(),
+        ));
+    }
+    Ok(count)
+}
+
+fn git_log_output(
+    path: &Path,
+    count: usize,
+    author: Option<&str>,
+    file: Option<&str>,
+) -> Result<String, ContextError> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(path)
+        .arg("log")
+        .arg(format!("--max-count={count}"))
+        .arg("--date=iso-strict")
+        .arg("--pretty=format:commit: %H%nshort: %h%nauthor: %an <%ae>%ndate: %ad%nsubject: %s")
+        .arg("--name-only");
+    if let Some(author) = author {
+        command.arg(format!("--author={author}"));
+    }
+    if let Some(file) = file {
+        command.arg("--").arg(file);
+    }
+
+    let output = command.output().map_err(|error| {
+        ContextError::InternalFailure(format!("failed to run git log: {error}"))
+    })?;
+    if output.status.success() {
+        return String::from_utf8(output.stdout).map_err(|error| {
+            ContextError::UnsupportedContent(format!("git log output was not valid UTF-8: {error}"))
+        });
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.contains("does not have any commits yet")
+        || stderr.contains("your current branch") && stderr.contains("no commits")
+    {
+        return Ok(String::new());
+    }
+
+    Err(ContextError::InternalFailure(format!(
+        "git log failed for {}: {}",
+        path.display(),
+        if stderr.is_empty() {
+            output.status.to_string()
+        } else {
+            stderr
+        }
+    )))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1659,7 +1779,8 @@ mod tests {
                 "stdin".to_string(),
                 "directory_summary".to_string(),
                 "git_status".to_string(),
-                "git_diff".to_string()
+                "git_diff".to_string(),
+                "git_commits".to_string()
             ]
         );
     }
@@ -1715,6 +1836,46 @@ mod tests {
                 .content
                 .contains("[truncated: omitted 3 characters]")
         );
+    }
+
+    #[test]
+    fn git_commit_provider_metadata_is_git_context() {
+        let metadata = GitCommitContextProvider.metadata();
+
+        assert_eq!(metadata.name, "git_commits");
+        assert_eq!(metadata.kind, ContextKind::GitHistory);
+    }
+
+    #[test]
+    fn git_commit_count_is_bounded() {
+        assert_eq!(parse_git_commit_count(None).expect("default"), 5);
+        assert_eq!(
+            parse_git_commit_count(Some(&"10".to_string())).expect("count"),
+            10
+        );
+        assert!(parse_git_commit_count(Some(&"0".to_string())).is_err());
+        assert!(parse_git_commit_count(Some(&"101".to_string())).is_err());
+        assert!(parse_git_commit_count(Some(&"abc".to_string())).is_err());
+    }
+
+    #[test]
+    fn git_commit_provider_handles_repositories_without_commits() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        std::process::Command::new("git")
+            .arg("init")
+            .arg(tempdir.path())
+            .output()
+            .expect("git init");
+
+        let entry = GitCommitContextProvider
+            .collect(ContextProviderRequest {
+                path: Some(tempdir.path().to_path_buf()),
+                ..ContextProviderRequest::default()
+            })
+            .expect("empty git log");
+
+        assert_eq!(entry.kind, ContextKind::GitHistory);
+        assert_eq!(entry.content, "recent commits: none");
     }
 
     #[test]

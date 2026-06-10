@@ -107,3 +107,4 @@ Historical codenames should be tracked in docs/versioning.md below
 * 0.6.0 status-satellite
 * 0.7.0 diff-lantern
 * 0.8.0 commit-oracle
+* 0.9.0 summary-relay

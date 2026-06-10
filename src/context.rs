@@ -71,6 +71,7 @@ pub enum ContextKind {
     Note,
     SearchResult,
     NotebookEntry,
+    ProjectSummary,
     Manual,
     Unknown(String),
 }
@@ -88,6 +89,7 @@ impl fmt::Display for ContextKind {
             Self::Note => formatter.write_str("note"),
             Self::SearchResult => formatter.write_str("search_result"),
             Self::NotebookEntry => formatter.write_str("notebook_entry"),
+            Self::ProjectSummary => formatter.write_str("project_summary"),
             Self::Manual => formatter.write_str("manual"),
             Self::Unknown(value) => write!(formatter, "unknown:{value}"),
         }

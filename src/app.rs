@@ -5,13 +5,16 @@ use std::time::Duration;
 use crate::commands::{CommandSuggestion, parse_command_suggestions_with_policy};
 use crate::config::Config;
 use crate::context::{
-    ContextError, ContextPriority, ContextProviderRegistry, ContextProviderRequest,
-    SessionContextStore, budget_warning, prune_context, register_default_context_providers,
-    render_context_details, render_context_list, render_context_stats,
+    ContextEntry, ContextError, ContextKind, ContextOrigin, ContextPriority, ContextProvenance,
+    ContextProviderRegistry, ContextProviderRequest, SessionContextStore, budget_warning,
+    prune_context, register_default_context_providers, render_context_details, render_context_list,
+    render_context_stats,
 };
 use crate::formatting::render_assistant_output_with_policy;
 use crate::keybindings::render_keybindings;
-use crate::project::{ProjectError, detect_project, render_project_status};
+use crate::project::{
+    ProjectError, detect_project, render_project_status, render_project_summary, summarize_project,
+};
 use crate::prompts::{Stance, assemble_prompt, render_prompt_estimate};
 use crate::providers::{ChatMessage, ChatRequest, ChatResponse, ChatRole, Provider, ProviderError};
 use crate::repl::ReplError;
@@ -109,6 +112,10 @@ impl App {
 
         if trimmed == "/project" {
             return self.render_project();
+        }
+
+        if trimmed == "/project scan" || trimmed == "/project scan --preview" {
+            return self.project_scan(trimmed == "/project scan --preview");
         }
 
         if trimmed == "/help" {
@@ -342,6 +349,39 @@ impl App {
         )
     }
 
+    pub fn project_scan(&mut self, preview: bool) -> Result<String, AppError> {
+        let cwd = std::env::current_dir().map_err(|error| ProjectError::Read {
+            path: PathBuf::from("."),
+            error: error.to_string(),
+        })?;
+        let summary = summarize_project(&cwd, self.config.project.root.as_deref())?;
+        let rendered = render_project_summary(&summary);
+        if preview {
+            return Ok(rendered);
+        }
+
+        let mut provenance = ContextProvenance::new(ContextOrigin::Generated);
+        provenance.source_path = Some(summary.root.clone());
+        provenance
+            .provider_details
+            .insert("branch".into(), summary.branch.clone());
+        provenance
+            .provider_details
+            .insert("files_seen".into(), summary.files_seen.to_string());
+        provenance
+            .provider_details
+            .insert("truncated".into(), summary.truncated.to_string());
+        let entry = ContextEntry::new(
+            "",
+            ContextKind::ProjectSummary,
+            "project summary",
+            provenance,
+            rendered,
+        )
+        .with_priority(ContextPriority::High);
+        Ok(format!("added {}", self.add_context_entry(entry)?))
+    }
+
     fn project_context_path(&self) -> Result<PathBuf, AppError> {
         let cwd = std::env::current_dir().map_err(|error| ProjectError::Read {
             path: PathBuf::from("."),
@@ -551,6 +591,17 @@ impl App {
         Ok(format!("added {} ({})", entry.id, entry.title))
     }
 
+    fn add_context_entry(&mut self, entry: ContextEntry) -> Result<String, AppError> {
+        let id = self.context_store.add(entry);
+        let entry = self
+            .context_store
+            .get(&id)
+            .ok_or_else(|| ContextError::NotFound(id.clone()))?;
+        self.transcript
+            .record_context_event("add", entry, "added to session context");
+        Ok(format!("{} ({})", entry.id, entry.title))
+    }
+
     fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<String, AppError> {
         self.context_store.set_enabled(id, enabled)?;
         let entry = self
@@ -633,6 +684,7 @@ fn help_overview() -> &'static str {
     "Commands:
 /context                       list attached context
 /project                       show detected Git project and branch
+/project scan [--preview]      summarize project or add summary context
 /context stats                 show context and prompt budget estimates
 /context show <id>             inspect a context entry
 /context enable|disable <id>   control model inclusion
@@ -663,7 +715,7 @@ fn help_topic(topic: &str) -> &'static str {
             "Context is explicit and session-scoped. Use /add-note, /add-file, /add-dir, or /add-output to attach material. Use /context stats before requests to inspect attached context size and prompt estimates."
         }
         "project" => {
-            "Project detection walks upward from the current directory or configured project.root to find a Git repository. Use /project or /panel to inspect the detected root and branch."
+            "Project detection walks upward from the current directory or configured project.root to find a Git repository. Use /project or /panel to inspect the detected root and branch. Use /project scan --preview to inspect a lightweight repository summary, or /project scan to add it as context."
         }
         "git" => {
             "Use /add-git-status to attach current branch, staged files, modified files, and untracked files. Use /add-diff, /add-diff --staged, or /add-diff --staged <path> to attach read-only diff context. Use /add-commits, /add-commits --count 10, /add-commits --author=alice, or /add-commits src/app.rs to attach recent history."
@@ -1131,6 +1183,37 @@ mod tests {
         assert!(parse_git_commit_args("--count").is_err());
         assert!(parse_git_commit_args("--author=").is_err());
         assert!(parse_git_commit_args("one two").is_err());
+    }
+
+    #[test]
+    fn project_scan_preview_and_context_add_use_summary() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let repo = tempdir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("git dir");
+        std::fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").expect("head");
+        std::fs::create_dir_all(repo.join("src")).expect("src dir");
+        std::fs::write(repo.join("Cargo.toml"), "[package]\nname = \"demo\"\n").expect("cargo");
+        std::fs::write(repo.join("src").join("main.rs"), "fn main() {}\n").expect("main");
+
+        let mut config = test_config();
+        config.project.root = Some(repo);
+        let mut app = App::new(config, Box::new(NoopProvider));
+
+        let preview = app
+            .handle_command("/project scan --preview")
+            .expect("preview");
+        assert!(preview.contains("Project Summary"));
+        assert!(preview.contains("src/main.rs"));
+
+        assert_eq!(
+            app.handle_command("/project scan").expect("scan"),
+            "added ctx-001 (project summary)"
+        );
+        assert!(
+            app.handle_command("/context")
+                .expect("context")
+                .contains("project_summary")
+        );
     }
 
     #[tokio::test]

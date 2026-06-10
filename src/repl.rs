@@ -45,7 +45,7 @@ impl Repl {
             }
 
             if input.starts_with("/context")
-                || input == "/project"
+                || input.starts_with("/project")
                 || input.starts_with("/stance")
                 || input.starts_with("/copy ")
                 || input.starts_with("/explain ")

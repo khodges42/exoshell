@@ -203,6 +203,13 @@ Inspect detected Git project state:
 exo> /project
 ```
 
+Preview or attach a lightweight project summary:
+
+```text
+exo> /project scan --preview
+exo> /project scan
+```
+
 Attach current Git branch and working tree state as explicit context:
 
 ```text
